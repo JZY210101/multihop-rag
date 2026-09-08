@@ -1,0 +1,23 @@
+# FlashRAG 原生配置。数据目录结构：data_dir/dataset_name/{train,dev,test}.jsonl
+data_dir: "data/FlashRAG_Data/"
+dataset_name: "hotpotqa"
+split: ["test"]
+test_sample_num: ~
+random_sample: false
+retrieval_method: "bm25"
+index_path: ~
+corpus_path: "data/wiki_corpus.jsonl"
+retrieval_topk: 5
+bm25_backend: "bm25s"
+framework: "hf"
+generator_model: "Qwen/Qwen2.5-7B-Instruct"
+generator_model_path: "Qwen/Qwen2.5-7B-Instruct"
+generation_params:
+  max_tokens: 256
+  temperature: 0.0
+save_intermediate_data: true
+save_retrieval_cache: false
+use_retrieval_cache: false
+metrics: ["em", "f1", "acc", "precision", "recall"]
+fixed_hop_from: "auto"
+default_hop_num: 2

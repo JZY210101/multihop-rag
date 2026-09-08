@@ -1,0 +1,18 @@
+# 项目控制参数
+dataset: hotpotqa
+data_path: data/hotpotqa.json
+corpus_path: data/wiki_corpus.jsonl
+output_path: outputs/hotpotqa.jsonl
+backend: flashrag
+retriever: bm25
+top_k: 5
+default_hop_num: 2
+
+# FlashRAG / Generator 参数
+generator_model: Qwen/Qwen2.5-7B-Instruct
+retrieval_method: bm25
+retrieval_topk: 5
+index_path: data/index
+model_name: Qwen/Qwen2.5-7B-Instruct
+max_new_tokens: 256
+temperature: 0.0

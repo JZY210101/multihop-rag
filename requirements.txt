@@ -1,0 +1,8 @@
+# 使用官方仓库版本；PyPI 上的同名包不是该项目的完整发行版
+flashrag @ git+https://github.com/RUC-NLPIR/FlashRAG.git
+rank-bm25>=0.2.2
+transformers>=4.45.0
+torch>=2.1.0
+sentence-transformers>=3.0.0
+tqdm>=4.66.0
+pyyaml>=6.0.0
