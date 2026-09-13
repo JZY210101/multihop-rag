@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Local datasets, indexes, model outputs, and caches
+data/
+outputs/
+.cache/
+
+# Local reference checkout; the adapted implementation lives in src/redeep/
+ReDEeP-ICLR/

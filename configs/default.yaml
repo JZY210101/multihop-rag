@@ -7,12 +7,14 @@ backend: flashrag
 retriever: bm25
 top_k: 5
 default_hop_num: 2
+hallucination_f1_threshold: 0.30
 
 # FlashRAG / Generator 参数
 generator_model: Qwen/Qwen2.5-7B-Instruct
 retrieval_method: bm25
 retrieval_topk: 5
-index_path: data/index
+index_path: data/index/bm25
 model_name: Qwen/Qwen2.5-7B-Instruct
 max_new_tokens: 256
 temperature: 0.0
+generator_max_input_len: 3840
