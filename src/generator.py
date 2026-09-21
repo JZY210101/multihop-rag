@@ -6,10 +6,21 @@ class Generator:
         temperature: float = 0.0,
         max_input_len: int = 3840,
     ):
+        from pathlib import Path
+
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+        model_path = Path(model_name)
+        if not model_path.is_dir() or not (model_path / "config.json").is_file():
+            raise FileNotFoundError(f"Local model not found at {model_path}. Download it with ModelScope first.")
+        model_name = str(model_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto",
+            device_map="auto",
+            local_files_only=True,
+        )
         self.max_new_tokens, self.temperature = max_new_tokens, temperature
         self.max_input_len = int(max_input_len)
 

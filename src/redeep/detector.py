@@ -19,7 +19,7 @@ class ReDeEPDetector:
 
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen2.5-7B-Instruct",
+        model_name: str = "model/Qwen3-4B-Instruct-2507",
         calibrator: Optional[ReDeEPCalibrator] = None,
         device: Optional[str] = None,
         device_map: Optional[str] = "auto",
@@ -94,8 +94,13 @@ class ReDeEPDetector:
                 from sentence_transformers import SentenceTransformer
             except ImportError as exc:
                 raise ImportError("Chunk-level ReDeEP with an embedding model requires sentence-transformers") from exc
+            embedding_path = Path(self.embedding_model_name)
+            if not embedding_path.is_dir():
+                raise FileNotFoundError(
+                    f"Local embedding model not found at {embedding_path}. Download it with ModelScope first."
+                )
             device = self.extractor.device if self.extractor.device else None
-            self._embedder = SentenceTransformer(self.embedding_model_name, device=device)
+            self._embedder = SentenceTransformer(str(embedding_path), device=device)
         return self._embedder
 
     def score_enriched(self, record: Mapping[str, Any], include_token_scores: bool = True) -> Dict[str, Any]:
@@ -168,6 +173,7 @@ class ReDeEPDetector:
                 parts,
                 chunk_response,
                 pks,
+                response_token_ids=response_token_ids or None,
                 heads=parsed_heads,
                 chunk_size=self.chunk_size,
                 embedder=self._get_embedder(),

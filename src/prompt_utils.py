@@ -37,6 +37,19 @@ def normalize_generated_token_ids(token_ids: Any, eos_token_id: Any = None, pad_
     return normalized
 
 
+def decode_generated_response(tokenizer: Any, token_ids: List[int], fallback: Any = "") -> str:
+    """Decode the exact generated ids, falling back when a backend omits them."""
+    if token_ids and tokenizer is not None:
+        return str(
+            tokenizer.decode(
+                token_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+        ).strip()
+    return str(fallback).strip()
+
+
 def token_length(tokenizer: Any, text: str) -> int:
     """Return the token count for the same single-string path used at inference."""
     encoded = tokenizer(text, add_special_tokens=True)

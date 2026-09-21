@@ -1,7 +1,8 @@
 # 使用官方仓库版本；PyPI 上的同名包不是该项目的完整发行版
 flashrag @ git+https://github.com/RUC-NLPIR/FlashRAG.git@26913314e496c4dda0c0575f5f6fc0b15722e867
 rank-bm25>=0.2.2
-transformers>=4.45.0
+modelscope>=1.20.0
+transformers>=4.53.0
 torch>=2.1.0
 accelerate>=0.30.0
 sentence-transformers>=3.0.0

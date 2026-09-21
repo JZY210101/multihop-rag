@@ -166,10 +166,14 @@ def build_prompt_parts(question: str, trace: Dict[str, Any], answer_prompt: Opti
         answer_prompt = str(answer_prompt)
         if context:
             context_offset = answer_prompt.find(context)
-            if context_offset >= 0:
-                prefix = answer_prompt[:context_offset]
-                suffix = answer_prompt[context_offset + len(context) :]
-                prompt = answer_prompt
+            if context_offset < 0:
+                raise ValueError(
+                    "Saved answer_prompt does not contain the evidence reconstructed from trace; "
+                    "regenerate the trace or provide matching prompt_parts"
+                )
+            prefix = answer_prompt[:context_offset]
+            suffix = answer_prompt[context_offset + len(context) :]
+            prompt = answer_prompt
         else:
             prefix, suffix, prompt = answer_prompt, "", answer_prompt
     return {

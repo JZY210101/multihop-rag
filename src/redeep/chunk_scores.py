@@ -34,12 +34,21 @@ def _encode(embedder: Any, texts: List[str]):
     return embedder.encode(texts, normalize_embeddings=True)
 
 
+def _flat_values(value: Any) -> List[Any]:
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, list) and value and isinstance(value[0], list):
+        value = value[0]
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
 def calculate_chunk_scores(
     representations: Any,
     tokenizer: Any,
     parts: Dict[str, Any],
     response: str,
     token_pks: Dict[str, List[float]],
+    response_token_ids: Optional[Sequence[int]] = None,
     heads: Optional[Sequence[Tuple[int, int]]] = None,
     chunk_size: int = 400,
     embedder: Any = None,
@@ -57,22 +66,38 @@ def calculate_chunk_scores(
     context = parts.get("context", "")
     context_char_start = len(prefix)
     response_char_start = len(prompt)
-    full_text = prompt + response
-    encoded = tokenizer(full_text, add_special_tokens=True, return_offsets_mapping=True)
-    encoded_ids = encoded["input_ids"]
-    if encoded_ids and isinstance(encoded_ids[0], list):
-        encoded_ids = encoded_ids[0]
     actual_ids = representations.input_ids[0].detach().cpu().tolist()
-    if list(encoded_ids) != list(actual_ids):
-        return {"ecs": {}, "pks": {}, "chunks": [], "embedding_backend": "token_alignment_failed"}
-    offsets = [(int(start), int(end)) for start, end in encoded["offset_mapping"]]
     sequence_length = int(representations.input_ids.shape[-1])
-    offsets = offsets[:sequence_length]
+
+    exact_response_ids = list(response_token_ids or [])
+    if exact_response_ids:
+        prompt_encoded = tokenizer(prompt, add_special_tokens=True, return_offsets_mapping=True)
+        response_encoded = tokenizer(response, add_special_tokens=False, return_offsets_mapping=True)
+        prompt_ids = _flat_values(prompt_encoded["input_ids"])
+        decoded_response_ids = _flat_values(response_encoded["input_ids"])
+        if (
+            prompt_ids != actual_ids[: representations.response_start]
+            or decoded_response_ids != exact_response_ids
+            or actual_ids[representations.response_start :] != exact_response_ids
+        ):
+            return {"ecs": {}, "pks": {}, "chunks": [], "embedding_backend": "token_alignment_failed"}
+        prompt_offsets = [(int(start), int(end)) for start, end in _flat_values(prompt_encoded["offset_mapping"])]
+        response_offsets = [(int(start), int(end)) for start, end in _flat_values(response_encoded["offset_mapping"])]
+    else:
+        full_text = prompt + response
+        encoded = tokenizer(full_text, add_special_tokens=True, return_offsets_mapping=True)
+        encoded_ids = _flat_values(encoded["input_ids"])
+        if encoded_ids != actual_ids:
+            return {"ecs": {}, "pks": {}, "chunks": [], "embedding_backend": "token_alignment_failed"}
+        offsets = [(int(start), int(end)) for start, end in _flat_values(encoded["offset_mapping"])]
+        offsets = offsets[:sequence_length]
+        prompt_offsets = offsets
+        response_offsets = [(left - len(prompt), right - len(prompt)) for left, right in offsets]
 
     context_chunks = []
     for index, (start, end) in enumerate(_ranges(context, chunk_size)):
         global_start, global_end = context_char_start + start, context_char_start + end
-        token_indices = _tokens_overlapping(offsets, global_start, global_end)
+        token_indices = _tokens_overlapping(prompt_offsets, global_start, global_end)
         token_indices = [
             index for index in token_indices if representations.context_start <= index < representations.context_end
         ]
@@ -80,9 +105,16 @@ def calculate_chunk_scores(
             context_chunks.append({"id": index, "text": context[start:end], "tokens": token_indices})
     response_chunks = []
     for index, (start, end) in enumerate(_ranges(response, chunk_size)):
-        global_start, global_end = response_char_start + start, response_char_start + end
-        token_indices = _tokens_overlapping(offsets, global_start, global_end)
-        token_indices = [index for index in token_indices if representations.response_start <= index < sequence_length]
+        if exact_response_ids:
+            token_indices = [
+                representations.response_start + index for index in _tokens_overlapping(response_offsets, start, end)
+            ]
+        else:
+            global_start, global_end = response_char_start + start, response_char_start + end
+            token_indices = _tokens_overlapping(prompt_offsets, global_start, global_end)
+            token_indices = [
+                index for index in token_indices if representations.response_start <= index < sequence_length
+            ]
         if token_indices:
             response_chunks.append({"id": index, "text": response[start:end], "tokens": token_indices})
     if not context_chunks or not response_chunks:

@@ -10,11 +10,11 @@ default_hop_num: 2
 hallucination_f1_threshold: 0.30
 
 # FlashRAG / Generator 参数
-generator_model: Qwen/Qwen2.5-7B-Instruct
+generator_model: model/Qwen3-4B-Instruct-2507
 retrieval_method: bm25
 retrieval_topk: 5
 index_path: data/index/bm25
-model_name: Qwen/Qwen2.5-7B-Instruct
+model_name: model/Qwen3-4B-Instruct-2507
 max_new_tokens: 256
 temperature: 0.0
 generator_max_input_len: 3840

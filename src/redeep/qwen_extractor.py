@@ -1,13 +1,14 @@
 """Extract the Qwen representations needed by ReDeEP.
 
-The original ReDeEP repository patches LLaMA's forward method.  Qwen2 has the
-same pre-norm decoder layout, so we can collect the FFN residual states with
-forward hooks and keep the model checkpoint unmodified.
+The original ReDeEP repository patches LLaMA's forward method.  Qwen3 has the
+same pre-norm decoder layout needed here, so we collect the FFN residual states
+with forward hooks and keep the model checkpoint unmodified.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 
@@ -44,21 +45,38 @@ class QwenRepresentationExtractor:
         except ImportError as exc:  # pragma: no cover - exercised in runtime env
             raise ImportError("Qwen ReDeEP requires torch and transformers. Install requirements.txt first.") from exc
 
+        model_path = Path(model_name)
+        if not model_path.is_dir() or not (model_path / "config.json").is_file():
+            raise FileNotFoundError(
+                f"Local Qwen model not found at {model_path}. Download it with ModelScope before running ReDeEP."
+            )
+        model_name = str(model_path)
         self.torch = torch
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=trust_remote_code,
+            local_files_only=True,
+        )
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        load_kwargs: Dict[str, Any] = {"trust_remote_code": trust_remote_code}
-        if torch_dtype != "auto":
-            load_kwargs["torch_dtype"] = getattr(torch, torch_dtype)
+        dtype_value: Any = "auto" if torch_dtype == "auto" else getattr(torch, torch_dtype)
+        load_kwargs: Dict[str, Any] = {
+            "trust_remote_code": trust_remote_code,
+            "torch_dtype": dtype_value,
+        }
         if device_map is not None:
             load_kwargs["device_map"] = device_map
         # Qwen's SDPA/flash implementations may omit attention matrices.
         # ReDeEP requires the actual eager attention implementation; silently
         # changing the config after loading does not rebuild attention modules.
         try:
-            self.model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="eager", **load_kwargs)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                attn_implementation="eager",
+                local_files_only=True,
+                **load_kwargs,
+            )
         except TypeError as exc:
             raise RuntimeError(
                 "This ReDeEP adapter requires transformers>=4.45.0 so Qwen can be loaded "

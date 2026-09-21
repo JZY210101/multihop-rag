@@ -4,16 +4,30 @@ import unittest
 from pathlib import Path
 
 from src.hallucination_labels import retrieval_sufficient
-from src.prompt_utils import TRUNCATION_MARKER, fit_prompt_parts, normalize_generated_token_ids, token_length
+from src.prompt_utils import (
+    TRUNCATION_MARKER,
+    decode_generated_response,
+    fit_prompt_parts,
+    normalize_generated_token_ids,
+    token_length,
+)
 from src.redeep.calibration import ReDeEPCalibrator
 from src.redeep.chunk_scores import _ranges
-from src.redeep.io import enrich_record, read_records
+from src.redeep.io import build_prompt_parts, enrich_record, read_records
 
 
 class CharacterTokenizer:
     def __call__(self, text, add_special_tokens=True):
         prefix = [0] if add_special_tokens else []
         return {"input_ids": prefix + list(range(len(text)))}
+
+
+class DecodeTokenizer:
+    eos_token_id = 2
+    pad_token_id = 0
+
+    def decode(self, token_ids, **kwargs):
+        return "decoded answer"
 
 
 class ReDeEPCoreTests(unittest.TestCase):
@@ -31,6 +45,12 @@ class ReDeEPCoreTests(unittest.TestCase):
     def test_generated_token_ids_drop_eos_and_flashrag_padding(self):
         self.assertEqual(normalize_generated_token_ids([[10, 11, 2, 0, 0]], eos_token_id=2, pad_token_id=0), [10, 11])
         self.assertEqual(normalize_generated_token_ids([10, "bad"], eos_token_id=2), [])
+
+    def test_flashrag_answer_uses_exact_generated_token_ids(self):
+        self.assertEqual(
+            decode_generated_response(DecodeTokenizer(), [10, 11], "possibly mis-sliced"), "decoded answer"
+        )
+        self.assertEqual(decode_generated_response(DecodeTokenizer(), [], "fallback answer"), "fallback answer")
 
     def test_saved_prompt_parts_and_hop_count_are_preserved(self):
         parts = {
@@ -65,6 +85,11 @@ class ReDeEPCoreTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "do not reconstruct"):
             enrich_record(record)
+
+    def test_saved_answer_prompt_must_match_trace_evidence(self):
+        trace = {"hops": [{"hop": 1, "documents": [{"title": "Evidence", "text": "text"}]}]}
+        with self.assertRaisesRegex(ValueError, "does not contain"):
+            build_prompt_parts("q", trace, answer_prompt="Answer using unrelated evidence")
 
     def test_flashrag_contents_title_supports_retrieval_aware_mode(self):
         record = {"metadata": {"supporting_facts": {"title": ["Target Page"]}}}
@@ -120,7 +145,7 @@ class ReDeEPCoreTests(unittest.TestCase):
         self.assertEqual(calibrator.selected_layers, ["0"])
         self.assertGreater(calibrator.score(records[1]), calibrator.score(records[0]))
         calibrator.runtime_settings = {
-            "model": "Qwen/Qwen2.5-7B-Instruct",
+            "model": "model/Qwen3-4B-Instruct-2507",
             "granularity": "token",
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -128,9 +153,9 @@ class ReDeEPCoreTests(unittest.TestCase):
             calibrator.save(str(path))
             loaded = ReDeEPCalibrator.load(str(path))
         self.assertEqual(loaded.to_dict(), calibrator.to_dict())
-        loaded.validate_runtime({"model": "Qwen/Qwen2.5-7B-Instruct", "granularity": "token"})
+        loaded.validate_runtime({"model": "model/Qwen3-4B-Instruct-2507", "granularity": "token"})
         with self.assertRaisesRegex(ValueError, "granularity"):
-            loaded.validate_runtime({"model": "Qwen/Qwen2.5-7B-Instruct", "granularity": "chunk"})
+            loaded.validate_runtime({"model": "model/Qwen3-4B-Instruct-2507", "granularity": "chunk"})
         with self.assertRaisesRegex(ValueError, "missing calibrated"):
             loaded.score({"ecs": {}, "pks": {"0": [0.5]}})
 

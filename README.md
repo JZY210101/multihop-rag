@@ -9,11 +9,15 @@ pip install -r requirements.txt
 ```
 
 注意：这里使用 GitHub 官方 FlashRAG 仓库，不使用 PyPI 上同名的非官方/不完整包。
+六个问答数据文件使用 Git LFS；clone 本仓库前需安装 Git LFS，clone 后可执行
+`git lfs pull` 确认数据已完整下载。
 
 ## 运行
 
 ```bash
-PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml
+PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml \
+  --dataset_name hotpotqa --split dev \
+  --output outputs/hotpotqa_dev_fixed_hop.json
 ```
 
 FlashRAG 官方数据集需要先下载到本地数据目录。FlashRAG 的标准结构是：
@@ -28,7 +32,9 @@ data/wiki_corpus.jsonl
 这三个官方预处理数据集没有带答案的 `test.jsonl`，默认使用 `dev`。切换数据集：
 
 ```bash
-PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml --dataset_name musique
+PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml \
+  --dataset_name musique --split dev \
+  --output outputs/musique_dev_fixed_hop.json
 ```
 
 问答数据与检索语料是两类文件。运行 BM25 前还需准备配置中 `corpus_path` 指向的
@@ -70,15 +76,28 @@ retrieval-aware 评估，支持文档未被检索到的样本保留
 
 ## Qwen ReDeEP 幻觉检测
 
-当前 ReDeEP 适配使用 `Qwen/Qwen2.5-7B-Instruct` 提取内部状态，不使用原始
+当前 ReDeEP 适配使用本地 `model/Qwen3-4B-Instruct-2507` 提取内部状态。模型通过 ModelScope
+下载，不使用 Hugging Face 在线下载，也不使用原始
 `ReDEeP-ICLR` 中的 LLaMA 实现，也不包含 AARF 干预。检测器计算完整的 ECS + PKS
 联合分数，支持 token-level 和 chunk-level 两种粒度。
 本适配只输出完整 ECS + PKS 联合 ReDeEP；不实现 AARF，也不生成 ECS-only、PKS-only
 或其他对照组结果。
 
-先运行多跳 pipeline，生成包含 `fixed_hop_trace`、`answer_prompt` 和 `redeep_records`
-的输出。然后使用训练集校准 ReDeEP 的 attention heads、FFN layers、归一化范围和
-联合权重，再在 dev 集固定校准参数评估：
+先运行多跳 pipeline，分别生成包含 `fixed_hop_trace`、`answer_prompt` 和
+`redeep_records` 的 train/dev 输出：
+
+```bash
+PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml \
+  --dataset_name hotpotqa --split train \
+  --output outputs/hotpotqa_train_fixed_hop.json
+
+PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml \
+  --dataset_name hotpotqa --split dev \
+  --output outputs/hotpotqa_dev_fixed_hop.json
+```
+
+然后使用训练集校准 ReDeEP 的 attention heads、FFN layers、归一化范围和联合权重，再在
+dev 集固定校准参数评估：
 
 ```bash
 # 训练集校准，并输出训练集分数和 calibration 文件
@@ -102,7 +121,7 @@ PYTHONPATH=. python -m src.run_redeep fit \
   --output outputs/redeep_hotpotqa_chunk_train.jsonl \
   --calibration outputs/redeep_hotpotqa_chunk.json \
   --granularity chunk \
-  --embedding-model BAAI/bge-base-en-v1.5
+  --embedding-model model/bge-base-en-v1.5
 ```
 
 三个数据集分别运行时，将输入文件和 calibration 文件按数据集命名即可。默认
@@ -112,8 +131,8 @@ PYTHONPATH=. python -m src.run_redeep fit \
 
 Qwen ReDeEP 每条样本需要对完整 prompt + response 做一次全序列 forward，并返回所有
 attention 矩阵和 FFN residual，因此实际运行需要 GPU、足够显存和 `requirements.txt`
-中的 `torch`、`transformers`、`flashrag` 依赖。模型权重、索引、数据和输出均已在
-`.gitignore` 中排除。
+中的 `torch`、`transformers`、`flashrag` 依赖。模型权重、索引和输出不会提交；三个问答
+数据集使用 Git LFS 管理并随仓库上传。
 
 生成 prompt 默认限制为 3840 tokens，并为最多 256 个回答 token 预留空间；ReDeEP 的
 完整 question + evidence + response 默认上限为 4096 tokens。生成前若 evidence 超长，会

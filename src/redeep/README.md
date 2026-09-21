@@ -20,7 +20,8 @@ question
 ```
 
 支持 HotpotQA、2WikiMultiHopQA 和 MuSiQue。使用
-`Qwen/Qwen2.5-7B-Instruct` 提取内部状态，不使用 LLaMA，不包含 AARF，也不输出
+本地 `model/Qwen3-4B-Instruct-2507` 提取内部状态。模型通过 ModelScope 下载，不使用
+LLaMA，不包含 AARF，也不输出
 ECS-only、PKS-only 等对照结果。
 
 ## 2. 多跳修改
@@ -58,7 +59,7 @@ configs/redeep.yaml     # 默认检测配置
 模型以 `attn_implementation="eager"` 加载，因为 ECS 必须取得真实 attention 矩阵。
 前向只调用 Qwen backbone，不计算完整 CausalLM logits，从而减少显存峰值。
 
-Qwen2.5 decoder 是 pre-norm 结构：
+Qwen3 decoder 是 pre-norm 结构：
 
 - 在 `post_attention_layernorm` 输入处记录 FFN 前 residual；
 - 在 decoder layer 输出处记录 FFN 后 hidden state；
@@ -117,7 +118,7 @@ dev 只加载 train 保存的 heads、layers、归一化范围、`alpha` 和分�
 
 | 配置 | 默认值 | 含义 |
 | --- | --- | --- |
-| `model_name` | `Qwen/Qwen2.5-7B-Instruct` | 内部状态提取模型 |
+| `model_name` | `model/Qwen3-4B-Instruct-2507` | ModelScope 下载后的本地模型目录 |
 | `device_map` | `auto` | Accelerate 模型放置；单卡可设 `none` 并指定 `device` |
 | `torch_dtype` | `auto` | 可设 `float16`、`bfloat16` 或 `float32` |
 | `granularity` | `token` | `token` 或 `chunk` |
@@ -139,10 +140,25 @@ eager attention 的显存开销随序列长度近似二次增长。超长 eviden
 
 ## 7. 运行
 
-先安装依赖并准备 `data/wiki_corpus.jsonl`：
+先安装依赖、准备本地 Qwen3 模型和 `data/wiki_corpus.jsonl`：
 
 ```bash
 pip install -r requirements.txt
+```
+
+模型下载必须使用 ModelScope，并且省略 `README.md` 参数才能下载完整模型仓库：
+
+```bash
+mkdir -p model/Qwen3-4B-Instruct-2507
+modelscope download \
+  --model Qwen/Qwen3-4B-Instruct-2507 \
+  --local_dir ./model/Qwen3-4B-Instruct-2507
+```
+
+运行前确认本地模型文件存在：
+
+```bash
+test -f model/Qwen3-4B-Instruct-2507/config.json
 ```
 
 分别生成 train 和 dev 的多跳 trace。下面以 HotpotQA 为例；另外两个数据集将名称替换为
@@ -150,13 +166,14 @@ pip install -r requirements.txt
 
 ```bash
 PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml \
-  --dataset_name hotpotqa --split train
+  --dataset_name hotpotqa --split train \
+  --output outputs/hotpotqa_train_fixed_hop.json
 PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml \
-  --dataset_name hotpotqa --split dev
+  --dataset_name hotpotqa --split dev \
+  --output outputs/hotpotqa_dev_fixed_hop.json
 ```
 
-输出位置由 FlashRAG 的 `save_dir` 决定，以终端显示和实际生成文件为准。然后独立完成
-train 校准和 dev 评估：
+然后独立完成 train 校准和 dev 评估：
 
 ```bash
 PYTHONPATH=. python -m src.run_redeep fit \
@@ -175,7 +192,7 @@ PYTHONPATH=. python -m src.run_redeep evaluate \
 chunk-level 推荐增加：
 
 ```bash
---granularity chunk --embedding-model BAAI/bge-base-en-v1.5
+--granularity chunk --embedding-model model/bge-base-en-v1.5
 ```
 
 第一次运行可增加 `--max-records 500` 建立校准子集；若其中只有一种标签，需要扩大样本数。

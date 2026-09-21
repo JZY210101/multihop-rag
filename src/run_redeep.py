@@ -35,7 +35,7 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument("--config", default=None, help="Optional ReDeEP YAML config; CLI arguments take priority")
         sub.add_argument("--input", required=True, help="JSON or JSONL multi-hop trace file")
         sub.add_argument("--output", required=True, help="JSONL score output")
-        sub.add_argument("--model", default="Qwen/Qwen2.5-7B-Instruct")
+        sub.add_argument("--model", default="model/Qwen3-4B-Instruct-2507")
         sub.add_argument("--label-mode", choices=LABEL_MODES, default="f1_answer")
         sub.add_argument(
             "--f1-threshold",
@@ -52,7 +52,11 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument("--pks-batch-size", type=int, default=8)
         sub.add_argument("--granularity", choices=("token", "chunk"), default="token")
         sub.add_argument("--chunk-size", type=int, default=400)
-        sub.add_argument("--embedding-model", default=None, help="For chunk ECS, e.g. BAAI/bge-base-en-v1.5")
+        sub.add_argument(
+            "--embedding-model",
+            default=None,
+            help="Local ModelScope directory for chunk ECS, e.g. model/bge-base-en-v1.5",
+        )
         sub.add_argument(
             "--max-input-tokens",
             type=int,

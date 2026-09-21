@@ -1,12 +1,14 @@
 """FlashRAG 原生组件上的固定 hop 多跳 Pipeline。"""
 import copy
+import os
+from pathlib import Path
 from typing import Any
 from flashrag.pipeline import BasicPipeline
 from flashrag.prompt import PromptTemplate
 from flashrag.utils import get_generator, get_retriever
 
 from .hallucination_labels import DEFAULT_F1_THRESHOLD, answer_label_fields, retrieval_sufficient
-from .prompt_utils import fit_prompt_parts, normalize_generated_token_ids
+from .prompt_utils import decode_generated_response, fit_prompt_parts, normalize_generated_token_ids
 
 
 def _value(obj: Any, keys, default=None):
@@ -33,12 +35,18 @@ def _config_value(config, key, default=None):
 
 
 def _make_generator(config):
-    # FlashRAG's generic factory currently opens ``generator_model_path`` as a
-    # local directory before dispatching. Instantiate the known Qwen HF backend
-    # directly so a Hugging Face model id remains valid.
+    # Instantiate the audited HF runtime directly, but require ModelScope-downloaded
+    # local weights so Transformers never downloads a checkpoint implicitly.
     if _config_value(config, "framework") == "hf":
         from flashrag.generator import HFCausalLMGenerator
 
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        model_path = Path(_config_value(config, "generator_model_path", ""))
+        if not model_path.is_dir() or not (model_path / "config.json").is_file():
+            raise FileNotFoundError(
+                f"Local generator model not found at {model_path}. Download it with ModelScope before running."
+            )
         return HFCausalLMGenerator(config)
     return get_generator(config)
 
@@ -115,22 +123,32 @@ class FixedHopPipeline(BasicPipeline):
             lines.append(f"[hop={hop} doc_id={doc_id}] {text}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _response_text(generated):
+        """Normalize FlashRAG/generator return shapes to one response string."""
+        if isinstance(generated, dict):
+            responses = generated.get("responses", generated.get("response", ""))
+            generated = responses[0] if isinstance(responses, (list, tuple)) and responses else responses
+        elif isinstance(generated, (list, tuple)):
+            generated = generated[0] if generated else ""
+        return str(generated).strip()
+
     def _generate_answer(self, prompt):
         """Return decoded text and exact generated ids when supported."""
         try:
             generated = self.generator.generate([prompt], return_dict=True)
         except TypeError:
-            return self.generator.generate([prompt])[0].strip(), []
+            return self._response_text(self.generator.generate([prompt])), []
         if not isinstance(generated, dict) or "responses" not in generated:
-            response = generated[0] if isinstance(generated, list) else generated
-            return str(response).strip(), []
-        response = str(generated["responses"][0]).strip()
+            return self._response_text(generated), []
+        response = self._response_text(generated.get("responses"))
         tokenizer = getattr(self.generator, "tokenizer", None)
         token_ids = normalize_generated_token_ids(
             generated.get("generated_token_ids"),
             getattr(tokenizer, "eos_token_id", None),
             getattr(tokenizer, "pad_token_id", None),
         )
+        response = decode_generated_response(tokenizer, token_ids, response)
         return response, token_ids
 
     def run(self, dataset, do_eval=True, pred_process_fun=None):
@@ -155,7 +173,7 @@ class FixedHopPipeline(BasicPipeline):
                         "\nNext query:",
                         self.generator_max_input_len if self.prompt_tokenizer is not None else None,
                     )
-                    query = self.generator.generate([query_parts["prompt"]])[0].strip()
+                    query = self._response_text(self.generator.generate([query_parts["prompt"]]))
                     if not query:
                         query = item.question
             prompt_parts = fit_prompt_parts(

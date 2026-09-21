@@ -2,10 +2,13 @@
 __pycache__/
 *.py[cod]
 
-# Local datasets, indexes, model outputs, and caches
-data/
+# Runtime outputs and caches
 outputs/
 .cache/
+
+# Model weights are local-only; keep the directory placeholder in Git.
+model/*
+!model/.gitkeep
 
 # Local reference checkout; the adapted implementation lives in src/redeep/
 ReDEeP-ICLR/

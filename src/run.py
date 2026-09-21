@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--config", default="configs/flashrag_fixed_hop.yaml")
     parser.add_argument("--dataset_name")
     parser.add_argument("--split")
+    parser.add_argument("--output", help="Optional fixed output path; requires exactly one split")
     args = parser.parse_args()
     overrides = {}
     if args.dataset_name:
@@ -38,12 +39,21 @@ def main():
     config = Config(config_file_path=args.config, config_dict=overrides)
     _validate_runtime_paths(config)
     all_split = get_dataset(config)
+    if args.output and len(config["split"]) != 1:
+        raise ValueError("--output requires exactly one configured split")
     for split in config["split"]:
         if all_split.get(split) is None:
             raise FileNotFoundError(f"Dataset split not found: {config['dataset_path']}/{split}.jsonl")
         print(f"Running fixed-hop FlashRAG pipeline on {split} ({len(all_split[split])} samples)")
         output = FixedHopPipeline(config).run(all_split[split], do_eval=True)
-        output.save(f"{config['save_dir']}/{config['dataset_name']}_{split}_fixed_hop.json")
+        save_path = (
+            Path(args.output)
+            if args.output
+            else Path(config["save_dir"]) / f"{config['dataset_name']}_{split}_fixed_hop.json"
+        )
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        output.save(str(save_path))
+        print(f"Saved fixed-hop trace to {save_path}")
 
 
 if __name__ == "__main__":
