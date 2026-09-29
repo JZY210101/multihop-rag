@@ -1,0 +1,9 @@
+# Oracle-evidence iterative multi-hop generation.
+# No Wiki18 corpus, BM25 index, or external retriever is used.
+evidence_mode: oracle_gold
+hop_mode: iterative
+retriever: none
+generator_model: model/Qwen3-4B-Instruct-2507
+max_input_len: 3840
+max_new_tokens: 128
+hallucination_f1_threshold: 0.30

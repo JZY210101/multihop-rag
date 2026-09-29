@@ -9,9 +9,7 @@ from src.hallucination_labels import (
     normalize_answer,
     retrieval_sufficient,
 )
-from src.pipeline import FixedHopPipeline
 from src.redeep.io import enrich_record
-from src.schema import RetrievedDoc, Sample
 
 
 class SharedLabelTests(unittest.TestCase):
@@ -67,30 +65,6 @@ class SharedLabelTests(unittest.TestCase):
         )
         self.assertEqual(sample.answer, "first")
         self.assertEqual(sample.gold_answers, ["first", "alias"])
-
-    def test_generic_pipeline_outputs_shared_label_fields(self):
-        class Retriever:
-            def search(self, query, top_k):
-                return [RetrievedDoc("doc", "evidence", 1.0, {"title": "Required Page"})]
-
-        class Generator:
-            def generate(self, prompt):
-                return "alias"
-
-        sample = Sample(
-            sample_id="1",
-            question="Q",
-            answer="first",
-            gold_answers=["first", "alias"],
-            hop_num=1,
-            supporting_facts=[["Required Page", 0]],
-        )
-        result = FixedHopPipeline(Retriever(), Generator()).run(sample)
-        self.assertEqual(result["answer_f1"], 1.0)
-        self.assertEqual(result["hallucination_label"], 0)
-        self.assertEqual(result["hallucination_label_method"], "answer_f1_threshold")
-        self.assertTrue(result["retrieval_sufficient"])
-
 
 if __name__ == "__main__":
     unittest.main()

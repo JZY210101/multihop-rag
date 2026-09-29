@@ -194,6 +194,39 @@ def _runtime_settings(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
+def _attach_hop_scores(detector: ReDeEPDetector, records: List[Dict[str, Any]], include_token_scores: bool) -> None:
+    """Score saved iterative hop responses with the fitted final-answer calibrator.
+
+    Hop scores are diagnostic traces.  Their label, when present, is the
+    sample-level final-answer label; they are not treated as independent
+    hop-level ground truth because the datasets do not consistently provide
+    gold intermediate answers.
+    """
+    for record in records:
+        hop_records = record.get("hop_records")
+        if not isinstance(hop_records, list):
+            continue
+        scored_hops = []
+        for hop in hop_records:
+            if not isinstance(hop, dict):
+                continue
+            hop_record = {
+                "id": f"{record.get('id', '')}:hop{hop.get('hop', '')}",
+                "question": record.get("question", ""),
+                "prediction": hop.get("response", ""),
+                "response_token_ids": hop.get("response_token_ids", []),
+                "gold_answers": record.get("gold_answers", []),
+                "hop_num": record.get("hop_num"),
+                "prompt_parts": hop.get("prompt_parts", {}),
+                "trace": {"mode": "oracle_iterative", "hops": [{"hop": hop.get("hop"), "documents": hop.get("evidence", {}).get("documents", [])}]},
+                "evidence_mode": "oracle_gold",
+                "hop_mode": "iterative",
+            }
+            enriched = enrich_record(hop_record, label_mode="f1_answer", f1_threshold=DEFAULT_F1_THRESHOLD)
+            scored_hops.append(detector.score_enriched(enriched, include_token_scores=include_token_scores))
+        record["hop_scores"] = scored_hops
+
+
 def main() -> None:
     args = _apply_yaml_config(_parser().parse_args())
     raw_records = read_records(args.input)
@@ -259,6 +292,7 @@ def main() -> None:
                 for key in ("token_ecs", "token_pks"):
                     result.pop(key, None)
             scored.append(result)
+        _attach_hop_scores(detector, scored, include_token_scores=not args.no_token_scores)
         print(json.dumps({"calibration": calibration_path, "metrics": _metrics(scored)}, ensure_ascii=False))
     else:
         detector.calibrator = loaded_calibrator
@@ -268,6 +302,7 @@ def main() -> None:
             f1_threshold=args.f1_threshold,
             include_token_scores=not args.no_token_scores,
         )
+        _attach_hop_scores(detector, scored, include_token_scores=not args.no_token_scores)
         print(json.dumps({"metrics": _metrics(scored)}, ensure_ascii=False))
     write_jsonl(scored, args.output)
 

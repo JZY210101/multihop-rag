@@ -5,6 +5,8 @@ __pycache__/
 # Runtime outputs and caches
 outputs/
 .cache/
+data/original_hotpotqa/*.json
+data/original_hotpotqa/*.jsonl
 
 # Model weights are local-only; keep the directory placeholder in Git.
 model/*

@@ -10,6 +10,9 @@ class Sample:
     gold_answers: List[str] = field(default_factory=list)
     hop_num: int = 2
     supporting_facts: Any = field(default_factory=list)
+    # Ordered gold evidence used by the oracle/iterative pipeline.  Each item
+    # is a mapping with ``hop`` and ``documents`` keys.
+    hops: List[Dict[str, Any]] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
