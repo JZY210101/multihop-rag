@@ -12,7 +12,7 @@ from src.prompt_utils import (
     token_length,
 )
 from src.redeep.calibration import ReDeEPCalibrator
-from src.redeep.chunk_scores import _ranges
+from src.redeep.scores import stable_jsd
 from src.redeep.io import build_prompt_parts, enrich_record, read_records
 
 
@@ -121,13 +121,20 @@ class ReDeEPCoreTests(unittest.TestCase):
         self.assertEqual(records[0]["prediction"], "a")
         self.assertEqual(records[0]["gold_answers"], ["a"])
 
-    def test_chunk_ranges_cover_text_without_stalling(self):
-        text = "one two three four five"
-        ranges = _ranges(text, 7)
-        self.assertTrue(ranges)
-        self.assertEqual(ranges[0][0], 0)
-        self.assertEqual(ranges[-1][1], len(text))
-        self.assertTrue(all(left < right for left, right in ranges))
+    def test_standard_jsd_is_symmetric_and_zero_for_equal_logits(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is installed in the GPU runtime, not this lightweight local test environment")
+
+        left = torch.tensor([[2.0, 0.0, -1.0]])
+        right = torch.tensor([[-1.0, 0.5, 2.0]])
+        self.assertAlmostEqual(float(stable_jsd(left, left).item()), 0.0, places=7)
+        self.assertAlmostEqual(
+            float(stable_jsd(left, right).item()),
+            float(stable_jsd(right, left).item()),
+            places=7,
+        )
 
     def test_joint_calibration_fit_and_round_trip(self):
         records = []
@@ -158,6 +165,32 @@ class ReDeEPCoreTests(unittest.TestCase):
             loaded.validate_runtime({"model": "model/Qwen3-4B-Instruct-2507", "granularity": "chunk"})
         with self.assertRaisesRegex(ValueError, "missing calibrated"):
             loaded.score({"ecs": {}, "pks": {"0": [0.5]}})
+
+    def test_paper_top_k_search_clips_to_available_features(self):
+        records = []
+        for index in range(20):
+            label = index % 2
+            records.append(
+                {
+                    "hallucination_label": label,
+                    "ecs": {
+                        "layer_0_head_0": 0.9 if label == 0 else 0.1,
+                        "layer_0_head_1": 0.8 if label == 0 else 0.2,
+                    },
+                    "pks": {
+                        "0": 0.1 if label == 0 else 0.9,
+                        "1": 0.2 if label == 0 else 0.8,
+                    },
+                }
+            )
+        calibrator = ReDeEPCalibrator(top_heads=32, top_layers=32).fit(
+            records[:16], validation_records=records[16:]
+        )
+        self.assertGreaterEqual(len(calibrator.selected_heads), 1)
+        self.assertLessEqual(len(calibrator.selected_heads), 2)
+        self.assertGreaterEqual(len(calibrator.selected_layers), 1)
+        self.assertLessEqual(len(calibrator.selected_layers), 2)
+        self.assertIn(calibrator.alpha, [value / 10.0 for value in range(1, 20)])
 
 
 if __name__ == "__main__":

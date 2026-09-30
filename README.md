@@ -9,7 +9,7 @@
   -> 第 1 跳 gold evidence -> 中间结果 1
   -> 第 2 跳 gold evidence + 中间结果 1 -> 中间结果 2
   -> ... -> 最终答案
-  -> Qwen 内部状态 -> ReDeeP ECS + PKS
+  -> Qwen 内部状态 -> token-level ReDeeP ECS + PKS
   -> 最终答案 token-F1 标签
 ```
 
@@ -89,7 +89,9 @@ PYTHONPATH=. python -m src.run_redeep evaluate \
   --calibration outputs/redeep_musique.json
 ```
 
-三个数据集分别使用各自的 train calibration。第一次校准可加 `--max-records 500`；完整输出建议加 `--no-token-scores` 以节省磁盘。
+三个数据集分别使用各自的 train calibration。正式方法只使用 token 模式。校准会按标签从 train trace 中留出 20% validation，并在 validation 上搜索 `K_head/K_layer=1..min(32, 实际候选数)` 和 `alpha=0.1..1.9`；不会假设 Qwen 固定为 32 层或 32 个头。第一次校准可加 `--max-records 500`；完整输出建议加 `--no-token-scores` 以节省磁盘。
+
+PKS 使用标准数学 JSD：`0.5*KL(p||m)+0.5*KL(q||m)`。不使用原始仓库中反向 KL 和 `10e5` 缩放的实现细节。
 
 数据文件可能按 hop 排序。校准子集不要直接取前 500 条，应在生成 train trace 时增加 `--sampling-strategy random --seed 42`；只做 5 条连通性检查时继续使用默认的 prefix 即可。
 

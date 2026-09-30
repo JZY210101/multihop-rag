@@ -35,7 +35,9 @@ def calculate_ecs(
     if context_end <= context_start or prediction_start >= prediction_end:
         return {}
     context_length = context_end - context_start
-    top_k = max(1, int(round(context_length * top_fraction)))
+    # The paper uses floor(context_length * 0.1).  Keep a minimum of one so a
+    # short but valid evidence span does not make ECS undefined.
+    top_k = max(1, int(context_length * top_fraction))
     top_k = min(top_k, context_length)
     final_hidden = representations.final_hidden_state[0]
     response_positions = range(max(0, prediction_start), min(sequence_length, prediction_end))
@@ -65,7 +67,14 @@ def calculate_ecs(
 
 
 def stable_jsd(logits_a: Any, logits_b: Any):
-    """Jensen-Shannon divergence for batched logits."""
+    """Standard mathematical Jensen-Shannon divergence for batched logits.
+
+    PyTorch's ``kl_div(input, target)`` computes ``KL(target || exp(input))``;
+    passing ``log(m)`` as input and ``p``/``q`` as targets therefore gives the
+    paper definition ``1/2 KL(p||m) + 1/2 KL(q||m)``.  We sum over the
+    vocabulary and do not apply the original repository's extra ``10e5``
+    scale, because the score is normalized during calibration.
+    """
     import torch.nn.functional as F
 
     log_p = F.log_softmax(logits_a.float(), dim=-1)

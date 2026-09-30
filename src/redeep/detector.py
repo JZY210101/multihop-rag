@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .calibration import ReDeEPCalibrator
-from .chunk_scores import calculate_chunk_scores
 from .io import enrich_record
 from .qwen_extractor import QwenRepresentationExtractor
 from .scores import calculate_ecs, calculate_pks, mean_features
@@ -26,22 +25,15 @@ class ReDeEPDetector:
         torch_dtype: str = "auto",
         top_fraction: float = 0.10,
         pks_batch_size: int = 8,
-        granularity: str = "token",
-        chunk_size: int = 400,
-        embedding_model: Optional[str] = None,
         max_input_tokens: Optional[int] = 4096,
     ):
         self.top_fraction = float(top_fraction)
         self.pks_batch_size = int(pks_batch_size)
-        if granularity not in {"token", "chunk"}:
-            raise ValueError("granularity must be 'token' or 'chunk'")
-        self.granularity = granularity
-        self.chunk_size = int(chunk_size)
         self.max_input_tokens = max_input_tokens
         if not 0.0 < self.top_fraction <= 1.0:
             raise ValueError("top_fraction must be in (0, 1]")
-        if self.pks_batch_size < 1 or self.chunk_size < 1:
-            raise ValueError("pks_batch_size and chunk_size must be positive")
+        if self.pks_batch_size < 1:
+            raise ValueError("pks_batch_size must be positive")
         if self.max_input_tokens is not None and int(self.max_input_tokens) < 2:
             raise ValueError("max_input_tokens must be at least 2")
         self.extractor = QwenRepresentationExtractor(
@@ -51,8 +43,6 @@ class ReDeEPDetector:
             torch_dtype=torch_dtype,
         )
         self.calibrator = calibrator
-        self.embedding_model_name = embedding_model
-        self._embedder = None
 
     def _input_too_long(self, parts: Mapping[str, Any], response: str, response_token_ids: Sequence[int]) -> bool:
         """Check the exact saved sequence without changing its evidence."""
@@ -85,23 +75,6 @@ class ReDeEPDetector:
             for key in ("token_ecs", "token_pks"):
                 scored.pop(key, None)
         return scored
-
-    def _get_embedder(self):
-        if self.embedding_model_name is None:
-            return None
-        if self._embedder is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError as exc:
-                raise ImportError("Chunk-level ReDeEP with an embedding model requires sentence-transformers") from exc
-            embedding_path = Path(self.embedding_model_name)
-            if not embedding_path.is_dir():
-                raise FileNotFoundError(
-                    f"Local embedding model not found at {embedding_path}. Download it with ModelScope first."
-                )
-            device = self.extractor.device if self.extractor.device else None
-            self._embedder = SentenceTransformer(str(embedding_path), device=device)
-        return self._embedder
 
     def score_enriched(self, record: Mapping[str, Any], include_token_scores: bool = True) -> Dict[str, Any]:
         response = str(record.get("prediction", ""))
@@ -159,32 +132,8 @@ class ReDeEPDetector:
             raise RuntimeError("Calibration selected no valid Qwen FFN layers for this model")
         scored["token_ecs"] = ecs
         scored["token_pks"] = pks
-        if self.granularity == "chunk":
-            chunk_response = response
-            if response_token_ids:
-                chunk_response = self.extractor.tokenizer.decode(
-                    response_token_ids,
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False,
-                )
-            chunk = calculate_chunk_scores(
-                representations,
-                self.extractor.tokenizer,
-                parts,
-                chunk_response,
-                pks,
-                response_token_ids=response_token_ids or None,
-                heads=parsed_heads,
-                chunk_size=self.chunk_size,
-                embedder=self._get_embedder(),
-            )
-            scored["ecs"] = chunk["ecs"]
-            scored["pks"] = chunk["pks"]
-            scored["chunks"] = chunk["chunks"]
-            scored["embedding_backend"] = chunk["embedding_backend"]
-        else:
-            scored["ecs"] = ecs
-            scored["pks"] = pks
+        scored["ecs"] = ecs
+        scored["pks"] = pks
         scored["ecs"] = mean_features(scored["ecs"])
         scored["pks"] = mean_features(scored["pks"])
         if not scored["ecs"] or not scored["pks"]:

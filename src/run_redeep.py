@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -46,17 +47,17 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument("--device", default=None)
         sub.add_argument("--device-map", default="auto")
         sub.add_argument("--torch-dtype", default="auto", choices=("auto", "float16", "bfloat16", "float32"))
-        sub.add_argument("--top-heads", type=int, default=8)
-        sub.add_argument("--top-layers", type=int, default=8)
+        sub.add_argument("--top-heads", type=int, default=32, help="Maximum K for the paper's 1..32 head search")
+        sub.add_argument("--top-layers", type=int, default=32, help="Maximum K for the paper's 1..32 layer search")
         sub.add_argument("--top-fraction", type=float, default=0.10, help="Context-token fraction used by token ECS")
         sub.add_argument("--pks-batch-size", type=int, default=8)
-        sub.add_argument("--granularity", choices=("token", "chunk"), default="token")
-        sub.add_argument("--chunk-size", type=int, default=400)
         sub.add_argument(
-            "--embedding-model",
-            default=None,
-            help="Local ModelScope directory for chunk ECS, e.g. model/bge-base-en-v1.5",
+            "--validation-fraction",
+            type=float,
+            default=0.20,
+            help="Held-out fraction for the paper-style K/weight/threshold selection",
         )
+        sub.add_argument("--seed", type=int, default=42)
         sub.add_argument(
             "--max-input-tokens",
             type=int,
@@ -96,9 +97,8 @@ def _apply_yaml_config(args: argparse.Namespace) -> argparse.Namespace:
             "top_layers",
             "top_fraction",
             "pks_batch_size",
-            "granularity",
-            "chunk_size",
-            "embedding_model",
+            "validation_fraction",
+            "seed",
             "max_input_tokens",
             "max_records",
             "f1_threshold",
@@ -113,8 +113,6 @@ def _apply_yaml_config(args: argparse.Namespace) -> argparse.Namespace:
                 setattr(args, destination, value)
     if args.label_mode not in LABEL_MODES:
         raise ValueError(f"Invalid label_mode: {args.label_mode}")
-    if args.granularity not in {"token", "chunk"}:
-        raise ValueError(f"Invalid granularity: {args.granularity}")
     if args.torch_dtype not in {"auto", "float16", "bfloat16", "float32"}:
         raise ValueError(f"Invalid torch_dtype: {args.torch_dtype}")
     if not 0.0 < float(args.top_fraction) <= 1.0:
@@ -123,6 +121,8 @@ def _apply_yaml_config(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("f1_threshold must be in [0, 1]")
     if int(args.top_heads) < 1 or int(args.top_layers) < 1:
         raise ValueError("top_heads and top_layers must be positive")
+    if not 0.0 <= float(args.validation_fraction) < 1.0:
+        raise ValueError("validation_fraction must be in [0, 1)")
     if args.max_input_tokens is not None and int(args.max_input_tokens) < 2:
         raise ValueError("max_input_tokens must be at least 2")
     return args
@@ -185,13 +185,40 @@ def _metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _runtime_settings(args: argparse.Namespace) -> Dict[str, Any]:
     return {
         "model": str(args.model),
-        "granularity": str(args.granularity),
+        "granularity": "token",
+        "jsd": "standard_math",
+        "top_k_search_max": 32,
+        "top_heads_max": int(args.top_heads),
+        "top_layers_max": int(args.top_layers),
         "top_fraction": float(args.top_fraction),
-        "chunk_size": int(args.chunk_size) if args.granularity == "chunk" else None,
-        "embedding_model": args.embedding_model if args.granularity == "chunk" else None,
         "label_mode": normalize_label_mode(str(args.label_mode)),
         "f1_threshold": float(args.f1_threshold),
     }
+
+
+def _split_validation(records: List[Dict[str, Any]], fraction: float, seed: int):
+    """Make a deterministic stratified train/validation split by response."""
+    if fraction <= 0.0 or len(records) < 4:
+        return records, []
+    groups: Dict[int, List[int]] = {}
+    for index, record in enumerate(records):
+        label = record.get("hallucination_label")
+        if label is not None:
+            groups.setdefault(int(label), []).append(index)
+    rng = random.Random(int(seed))
+    validation_indices = set()
+    for indices in groups.values():
+        shuffled = list(indices)
+        rng.shuffle(shuffled)
+        count = min(max(1, round(len(shuffled) * fraction)), max(0, len(shuffled) - 1))
+        validation_indices.update(shuffled[:count])
+    train = [record for index, record in enumerate(records) if index not in validation_indices]
+    validation = [record for index, record in enumerate(records) if index in validation_indices]
+    if len({record.get("hallucination_label") for record in train}) < 2:
+        return records, []
+    if len({record.get("hallucination_label") for record in validation}) < 2:
+        return records, []
+    return train, validation
 
 
 def _attach_hop_scores(detector: ReDeEPDetector, records: List[Dict[str, Any]], include_token_scores: bool) -> None:
@@ -250,6 +277,7 @@ def main() -> None:
         if not args.calibration:
             raise SystemExit("evaluate requires --calibration")
         loaded_calibrator = ReDeEPCalibrator.load(args.calibration)
+        # Fail fast on calibration/runtime mismatches before loading Qwen.
         loaded_calibrator.validate_runtime(_runtime_settings(args))
     device_map = args.device_map
     if device_map is not None and str(device_map).lower() in {"none", "null", "false"}:
@@ -261,9 +289,6 @@ def main() -> None:
         torch_dtype=args.torch_dtype,
         top_fraction=args.top_fraction,
         pks_batch_size=args.pks_batch_size,
-        granularity=args.granularity,
-        chunk_size=args.chunk_size,
-        embedding_model=args.embedding_model,
         max_input_tokens=args.max_input_tokens,
         calibrator=loaded_calibrator,
     )
@@ -272,7 +297,12 @@ def main() -> None:
         extracted = [
             detector.score_enriched(record, include_token_scores=not args.no_token_scores) for record in enriched
         ]
-        calibrator = ReDeEPCalibrator(top_heads=args.top_heads, top_layers=args.top_layers).fit(extracted)
+        calibration_train, calibration_validation = _split_validation(
+            extracted, args.validation_fraction, args.seed
+        )
+        calibrator = ReDeEPCalibrator(top_heads=args.top_heads, top_layers=args.top_layers).fit(
+            calibration_train, validation_records=calibration_validation
+        )
         calibrator.runtime_settings = _runtime_settings(args)
         calibration_path = args.calibration or str(Path(args.output).with_suffix(".calibration.json"))
         calibrator.save(calibration_path)

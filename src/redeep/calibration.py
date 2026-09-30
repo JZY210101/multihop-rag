@@ -1,4 +1,4 @@
-"""Train-set calibration for the joint ReDeEP score."""
+"""Validation calibration for the token-level ReDeEP score."""
 
 from __future__ import annotations
 
@@ -7,6 +7,9 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+
+MAX_PAPER_TOP_K = 32
 
 
 def _safe_auc(labels: Sequence[int], values: Sequence[float]) -> float:
@@ -39,8 +42,10 @@ class ReDeEPCalibrator:
     threshold are fitted on train records and then frozen for evaluation.
     """
 
-    top_heads: int = 8
-    top_layers: int = 8
+    # These are upper bounds.  ``fit`` searches every K in 1..bound, as in
+    # the paper, while the feature pools themselves come from the actual model.
+    top_heads: int = MAX_PAPER_TOP_K
+    top_layers: int = MAX_PAPER_TOP_K
     min_feature_auc: float = 0.0
     selected_heads: List[str] = field(default_factory=list)
     selected_layers: List[str] = field(default_factory=list)
@@ -102,7 +107,69 @@ class ReDeEPCalibrator:
         candidates.append(ordered[-1] + 1e-12)
         return max(candidates, key=lambda value: (cls._f1_at_threshold(scores, labels, value), -abs(value)))
 
-    def fit(self, records: Sequence[Mapping[str, Any]]) -> "ReDeEPCalibrator":
+    @staticmethod
+    def _array_auc(labels: Sequence[int], values: Sequence[float]) -> float:
+        """Fast AUC for the K/alpha grid search.
+
+        The ordinary sklearn call is correct but too expensive when the paper's
+        32 x 32 feature-count grid is evaluated on a large train set.
+        """
+        import numpy as np
+
+        y = np.asarray(labels, dtype=np.int8)
+        scores = np.asarray(values, dtype=np.float64)
+        if y.size == 0 or y.size != scores.size or len(np.unique(y)) < 2:
+            return 0.5
+        order = np.argsort(scores, kind="mergesort")
+        ordered = scores[order]
+        ranks = np.empty(scores.size, dtype=np.float64)
+        start = 0
+        while start < ordered.size:
+            end = start + 1
+            while end < ordered.size and ordered[end] == ordered[start]:
+                end += 1
+            ranks[order[start:end]] = (start + 1 + end) / 2.0
+            start = end
+        positives = y == 1
+        n_positive = int(positives.sum())
+        n_negative = int(y.size - n_positive)
+        return float((ranks[positives].sum() - n_positive * (n_positive + 1) / 2) / (n_positive * n_negative))
+
+    @staticmethod
+    def _matrix(records: Sequence[Mapping[str, Any]], keys: Sequence[str], field: str):
+        """Return a dense record x feature matrix using the existing mean rule."""
+        import numpy as np
+
+        matrix = np.zeros((len(records), len(keys)), dtype=np.float64)
+        for row, record in enumerate(records):
+            values = record.get(field, {})
+            for column, key in enumerate(keys):
+                value = _mean(values.get(key)) if isinstance(values, Mapping) else None
+                if value is not None:
+                    matrix[row, column] = float(value)
+        return matrix
+
+    @staticmethod
+    def _usable(records: Optional[Sequence[Mapping[str, Any]]]) -> List[Mapping[str, Any]]:
+        return [
+            record
+            for record in (records or [])
+            if record.get("hallucination_label") is not None and record.get("ecs") and record.get("pks")
+        ]
+
+    def fit(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        validation_records: Optional[Sequence[Mapping[str, Any]]] = None,
+    ) -> "ReDeEPCalibrator":
+        """Fit feature counts, coefficient, normalization, and threshold.
+
+        Feature ranking and normalization are learned from ``records``.  When
+        ``validation_records`` is supplied, the paper's K/alpha search and the
+        classification threshold are selected on that held-out split.  If it is
+        absent, the same search falls back to the training records for API
+        compatibility and small unit tests.
+        """
         usable = [
             record
             for record in records
@@ -144,31 +211,73 @@ class ReDeEPCalibrator:
             key=lambda item: item[1],
             reverse=True,
         )
-        self.selected_heads = [key for key, auc in ecs_ranked[: max(1, self.top_heads)] if auc >= self.min_feature_auc]
-        self.selected_layers = [
-            key for key, auc in pks_ranked[: max(1, self.top_layers)] if auc >= self.min_feature_auc
-        ]
-        if not self.selected_heads:
-            self.selected_heads = [key for key, _ in ecs_ranked[:1]]
-        if not self.selected_layers:
-            self.selected_layers = [key for key, _ in pks_ranked[:1]]
+        head_pool = [key for key, auc in ecs_ranked if auc >= self.min_feature_auc]
+        layer_pool = [key for key, auc in pks_ranked if auc >= self.min_feature_auc]
+        if not head_pool:
+            head_pool = [key for key, _ in ecs_ranked[:1]]
+        if not layer_pool:
+            layer_pool = [key for key, _ in pks_ranked[:1]]
+
+        # The paper searches K=1..32.  A different model may expose fewer
+        # layers/heads, so only K is clipped; the candidate pools are not.
+        head_limit = min(MAX_PAPER_TOP_K, len(head_pool), max(1, int(self.top_heads)))
+        layer_limit = min(MAX_PAPER_TOP_K, len(layer_pool), max(1, int(self.top_layers)))
+        head_keys = head_pool[:head_limit]
+        layer_keys = layer_pool[:layer_limit]
+        validation = self._usable(validation_records)
+        if len({int(record["hallucination_label"]) for record in validation}) < 2:
+            validation = []
+        selection_records = validation or usable
+        selection_labels = [int(record["hallucination_label"]) for record in selection_records]
+
+        import numpy as np
+
+        train_ecs = self._matrix(usable, head_keys, "ecs")
+        train_pks = self._matrix(usable, layer_keys, "pks")
+        select_ecs = self._matrix(selection_records, head_keys, "ecs")
+        select_pks = self._matrix(selection_records, layer_keys, "pks")
+        train_ecs_prefix = np.cumsum(train_ecs, axis=1)
+        train_pks_prefix = np.cumsum(train_pks, axis=1)
+        select_ecs_prefix = np.cumsum(select_ecs, axis=1)
+        select_pks_prefix = np.cumsum(select_pks, axis=1)
+
+        alpha_candidates = [value / 10.0 for value in range(1, 20)]
+        best = None
+        for head_count in range(1, head_limit + 1):
+            train_ecs_values = train_ecs_prefix[:, head_count - 1] / head_count
+            select_ecs_values = select_ecs_prefix[:, head_count - 1] / head_count
+            ecs_min, ecs_max = float(train_ecs_values.min()), float(train_ecs_values.max())
+            select_ecs_norm = (
+                (select_ecs_values - ecs_min) / (ecs_max - ecs_min) if ecs_max > ecs_min else np.zeros_like(select_ecs_values)
+            )
+            for layer_count in range(1, layer_limit + 1):
+                train_pks_values = train_pks_prefix[:, layer_count - 1] / layer_count
+                select_pks_values = select_pks_prefix[:, layer_count - 1] / layer_count
+                pks_min, pks_max = float(train_pks_values.min()), float(train_pks_values.max())
+                select_pks_norm = (
+                    (select_pks_values - pks_min) / (pks_max - pks_min) if pks_max > pks_min else np.zeros_like(select_pks_values)
+                )
+                for alpha in alpha_candidates:
+                    score_values = select_pks_norm - alpha * select_ecs_norm
+                    auc = self._array_auc(selection_labels, score_values)
+                    candidate = (auc, -abs(alpha - 1.0), -head_count, -layer_count)
+                    if best is None or candidate > best[0]:
+                        best = (candidate, head_count, layer_count, alpha)
+        if best is None:
+            raise ValueError("Unable to search ReDeEP feature counts")
+        _, head_count, layer_count, self.alpha = best
+        self.selected_heads = head_keys[:head_count]
+        self.selected_layers = layer_keys[:layer_count]
 
         ecs_values = [self._aggregate({**record, "ecs": record.get("ecs", {}), "pks": {}})[0] for record in usable]
         pks_values = [self._aggregate({**record, "ecs": {}, "pks": record.get("pks", {})})[1] for record in usable]
         self.ecs_min, self.ecs_max = min(ecs_values), max(ecs_values)
         self.pks_min, self.pks_max = min(pks_values), max(pks_values)
 
-        feature_pairs = [self._features(record) for record in usable]
-        alpha_candidates = [value / 10.0 for value in range(0, 31)]
-        self.alpha = max(
-            alpha_candidates,
-            key=lambda alpha: (
-                _safe_auc(labels, [pks - alpha * ecs for ecs, pks in feature_pairs]),
-                -abs(alpha - 1.0),
-            ),
-        )
-        scores = [self.score(record) for record in usable]
-        self.threshold = self._select_threshold(scores, labels)
+        threshold_records = validation or usable
+        threshold_scores = [self.score(record) for record in threshold_records]
+        threshold_labels = [int(record["hallucination_label"]) for record in threshold_records]
+        self.threshold = self._select_threshold(threshold_scores, threshold_labels)
         return self
 
     def score(self, record: Mapping[str, Any]) -> float:
