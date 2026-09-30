@@ -51,6 +51,10 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument("--top-layers", type=int, default=32, help="Maximum K for the paper's 1..32 layer search")
         sub.add_argument("--top-fraction", type=float, default=0.10, help="Context-token fraction used by token ECS")
         sub.add_argument("--pks-batch-size", type=int, default=8)
+        sub.add_argument("--batch-size", type=int, default=1,
+                         help="Number of records per batched Qwen forward; lower if CUDA OOM")
+        sub.add_argument("--progress-every", type=int, default=10,
+                         help="Print fit/evaluate progress after this many records")
         sub.add_argument(
             "--validation-fraction",
             type=float,
@@ -97,6 +101,8 @@ def _apply_yaml_config(args: argparse.Namespace) -> argparse.Namespace:
             "top_layers",
             "top_fraction",
             "pks_batch_size",
+            "batch_size",
+            "progress_every",
             "validation_fraction",
             "seed",
             "max_input_tokens",
@@ -221,7 +227,13 @@ def _split_validation(records: List[Dict[str, Any]], fraction: float, seed: int)
     return train, validation
 
 
-def _attach_hop_scores(detector: ReDeEPDetector, records: List[Dict[str, Any]], include_token_scores: bool) -> None:
+def _attach_hop_scores(
+    detector: ReDeEPDetector,
+    records: List[Dict[str, Any]],
+    include_token_scores: bool,
+    batch_size: int = 1,
+    progress_every: int = 10,
+) -> None:
     """Score saved iterative hop responses with the fitted final-answer calibrator.
 
     Hop scores are diagnostic traces.  Their label, when present, is the
@@ -229,11 +241,12 @@ def _attach_hop_scores(detector: ReDeEPDetector, records: List[Dict[str, Any]], 
     hop-level ground truth because the datasets do not consistently provide
     gold intermediate answers.
     """
-    for record in records:
+    flat_records = []
+    parent_indices = []
+    for parent_index, record in enumerate(records):
         hop_records = record.get("hop_records")
         if not isinstance(hop_records, list):
             continue
-        scored_hops = []
         for hop in hop_records:
             if not isinstance(hop, dict):
                 continue
@@ -249,9 +262,24 @@ def _attach_hop_scores(detector: ReDeEPDetector, records: List[Dict[str, Any]], 
                 "evidence_mode": "oracle_gold",
                 "hop_mode": "iterative",
             }
-            enriched = enrich_record(hop_record, label_mode="f1_answer", f1_threshold=DEFAULT_F1_THRESHOLD)
-            scored_hops.append(detector.score_enriched(enriched, include_token_scores=include_token_scores))
-        record["hop_scores"] = scored_hops
+            flat_records.append(hop_record)
+            parent_indices.append(parent_index)
+    if not flat_records:
+        return
+    scored = detector.score_records(
+        flat_records,
+        label_mode="f1_answer",
+        f1_threshold=DEFAULT_F1_THRESHOLD,
+        include_token_scores=include_token_scores,
+        batch_size=batch_size,
+        progress_every=progress_every,
+    )
+    grouped = {index: [] for index in range(len(records))}
+    for parent_index, hop_score in zip(parent_indices, scored):
+        grouped[parent_index].append(hop_score)
+    for parent_index, hop_scores in grouped.items():
+        if hop_scores:
+            records[parent_index]["hop_scores"] = hop_scores
 
 
 def main() -> None:
@@ -294,9 +322,14 @@ def main() -> None:
     )
     if args.command == "fit":
         assert enriched is not None
-        extracted = [
-            detector.score_enriched(record, include_token_scores=not args.no_token_scores) for record in enriched
-        ]
+        extracted = detector.score_records(
+            enriched,
+            label_mode=args.label_mode,
+            f1_threshold=args.f1_threshold,
+            include_token_scores=not args.no_token_scores,
+            batch_size=args.batch_size,
+            progress_every=args.progress_every,
+        )
         calibration_train, calibration_validation = _split_validation(
             extracted, args.validation_fraction, args.seed
         )
@@ -322,7 +355,13 @@ def main() -> None:
                 for key in ("token_ecs", "token_pks"):
                     result.pop(key, None)
             scored.append(result)
-        _attach_hop_scores(detector, scored, include_token_scores=not args.no_token_scores)
+        _attach_hop_scores(
+            detector,
+            scored,
+            include_token_scores=not args.no_token_scores,
+            batch_size=args.batch_size,
+            progress_every=args.progress_every,
+        )
         print(json.dumps({"calibration": calibration_path, "metrics": _metrics(scored)}, ensure_ascii=False))
     else:
         detector.calibrator = loaded_calibrator
@@ -331,8 +370,16 @@ def main() -> None:
             label_mode=args.label_mode,
             f1_threshold=args.f1_threshold,
             include_token_scores=not args.no_token_scores,
+            batch_size=args.batch_size,
+            progress_every=args.progress_every,
         )
-        _attach_hop_scores(detector, scored, include_token_scores=not args.no_token_scores)
+        _attach_hop_scores(
+            detector,
+            scored,
+            include_token_scores=not args.no_token_scores,
+            batch_size=args.batch_size,
+            progress_every=args.progress_every,
+        )
         print(json.dumps({"metrics": _metrics(scored)}, ensure_ascii=False))
     write_jsonl(scored, args.output)
 

@@ -294,3 +294,150 @@ class QwenRepresentationExtractor:
         finally:
             self._context_prefix = ""
             self._context_text = ""
+
+    def extract_batch_with_parts(self, items):
+        """Extract representations for independent records in one forward.
+
+        Each item keeps its own prompt/context/response boundaries. Padding is
+        added only for batching and is removed before returning per-record
+        representations. This method deliberately returns the same
+        ``QwenRepresentations`` objects as ``extract_with_parts``.
+        """
+        items = list(items)
+        if not items:
+            return []
+        if len(items) == 1:
+            item = items[0]
+            return [self.extract_with_parts(item["parts"], item["response"], item.get("response_token_ids"))]
+
+        torch = self.torch
+        encoded = []
+        metadata = []
+        for item in items:
+            parts = item["parts"]
+            response_ids = list(item.get("response_token_ids") or [])
+            prompt_tokens = self._tokenize(str(parts["prompt"]))
+            prompt_ids = prompt_tokens["input_ids"][0]
+            if response_ids:
+                response_tensor = torch.tensor(response_ids, dtype=prompt_ids.dtype)
+                ids = torch.cat([prompt_ids, response_tensor], dim=0)
+                response_start = int(prompt_ids.shape[0])
+                offsets = self._offsets(str(parts["prompt"]))
+            else:
+                full = self._tokenize(str(parts["prompt"]) + str(item["response"]))
+                ids = full["input_ids"][0]
+                response_start = int(prompt_ids.shape[0])
+                offsets = self._offsets(str(parts["prompt"]) + str(item["response"]))
+                if offsets is not None:
+                    response_chars = len(str(parts["prompt"]))
+                    response_positions = [
+                        index for index, (start, end) in enumerate(offsets)
+                        if end > response_chars and start < response_chars + len(str(item["response"]))
+                    ]
+                    if response_positions:
+                        response_start = min(response_positions)
+            context_prefix = str(parts.get("prefix", ""))
+            context_text = str(parts.get("context", ""))
+            if offsets is None:
+                raise RuntimeError("Qwen ReDeEP requires a fast tokenizer with offset mappings")
+            char_start = len(context_prefix)
+            char_end = char_start + len(context_text)
+            context_positions = [
+                index for index, (start, end) in enumerate(offsets)
+                if end > char_start and start < char_end
+            ]
+            context_start = min(context_positions) if context_positions else 0
+            context_end = max(context_positions) + 1 if context_positions else response_start
+            sequence_length = int(ids.shape[0])
+            prediction_start = max(0, min(response_start - 1, sequence_length))
+            prediction_end = max(prediction_start, min(sequence_length - 1, sequence_length))
+            if prediction_start >= prediction_end:
+                raise ValueError("The response did not produce any causal prediction positions")
+            encoded.append(ids)
+            metadata.append((int(response_start), int(context_start), int(context_end), prediction_start, prediction_end))
+
+        max_length = max(int(ids.shape[0]) for ids in encoded)
+        pad_id = int(self.tokenizer.pad_token_id)
+        input_ids = torch.full((len(encoded), max_length), pad_id, dtype=encoded[0].dtype)
+        attention_mask = torch.zeros((len(encoded), max_length), dtype=torch.long)
+        for row, ids in enumerate(encoded):
+            length = int(ids.shape[0])
+            input_ids[row, max_length - length :] = ids
+            attention_mask[row, max_length - length :] = 1
+        input_ids = input_ids.to(self._input_device())
+        attention_mask = attention_mask.to(input_ids.device)
+
+        # Hooks retain only the causal prediction slices needed by each row.
+        residuals: Dict[int, Any] = {}
+        after_ffn: Dict[int, Any] = {}
+        handles = []
+        for layer_id, layer in enumerate(self.layers):
+            norm = getattr(layer, "post_attention_layernorm", None)
+            if norm is None:
+                raise ValueError(f"Qwen layer {layer_id} has no post_attention_layernorm")
+
+            def capture_residual(module, inputs, index=layer_id):
+                if inputs:
+                    residuals[index] = inputs[0].detach()
+
+            def capture_layer_output(module, inputs, output, index=layer_id):
+                value = output[0] if isinstance(output, (tuple, list)) else output
+                if hasattr(value, "detach"):
+                    after_ffn[index] = value.detach()
+
+            handles.append(norm.register_forward_pre_hook(capture_residual))
+            handles.append(layer.register_forward_hook(capture_layer_output))
+        final_hidden = {}
+        final_norm = self._find_final_norm()
+        if final_norm is not None:
+            handles.append(final_norm.register_forward_hook(lambda module, inputs, output: final_hidden.update(value=output.detach())))
+        try:
+            with torch.no_grad():
+                outputs = self.backbone(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=(attention_mask.cumsum(-1) - 1).clamp_min(0),
+                    output_attentions=True,
+                    output_hidden_states=False,
+                    use_cache=False,
+                    return_dict=True,
+                )
+        finally:
+            for handle in handles:
+                handle.remove()
+        attentions = getattr(outputs, "attentions", None)
+        if not attentions or any(attention is None for attention in attentions):
+            raise RuntimeError("Qwen did not return attention matrices for batched extraction")
+        final_value = final_hidden.get("value", self._last_hidden(outputs).detach())
+        results = []
+        for row, (response_start, context_start, context_end, prediction_start, prediction_end) in enumerate(metadata):
+            length = int(encoded[row].shape[0])
+            offset = max_length - length
+            prediction_start += offset
+            prediction_end += offset
+            response_start += offset
+            context_start += offset
+            context_end += offset
+            row_residuals = {
+                layer: value[row : row + 1, prediction_start:prediction_end].detach()
+                for layer, value in residuals.items()
+            }
+            row_after = {
+                layer: value[row : row + 1, prediction_start:prediction_end].detach()
+                for layer, value in after_ffn.items()
+            }
+            results.append(QwenRepresentations(
+                input_ids=input_ids[row : row + 1, offset : offset + length].detach(),
+                prefix_len=response_start - offset,
+                context_start=max(0, min(context_start - offset, response_start - offset)),
+                context_end=max(0, min(context_end - offset, response_start - offset)),
+                response_start=max(0, min(response_start - offset, length)),
+                prediction_start=prediction_start - offset,
+                prediction_end=prediction_end - offset,
+                attentions=tuple(attention[row : row + 1, :, offset : offset + length, offset : offset + length].detach() for attention in attentions),
+                final_hidden_state=final_value[row : row + 1, offset : offset + length].detach(),
+                residual_before_ffn=row_residuals,
+                hidden_after_ffn=row_after,
+                logits=None,
+            ))
+        return results
