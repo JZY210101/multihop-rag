@@ -12,6 +12,8 @@ Hop 2 gold evidence + 中间结果 1 -> 中间结果 2
 每一跳保存 prompt、evidence、response、token ids
 ```
 
+Qwen 使用模型自带的 chat template，保存的 prompt 与实际生成 prompt 完全一致。MuSiQue 还会输入数据集提供的当前子问题，但不会向模型泄露 gold intermediate answer。
+
 `src/oracle_hop_pipeline.py` 完成逐跳生成，`src/run_oracle.py` 是生成入口；`src/redeep/` 内部模块负责 Qwen attention、FFN residual、ECS、PKS、校准和联合 ReDeeP 分数。
 
 ## 运行

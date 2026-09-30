@@ -24,6 +24,40 @@ class Generator:
         self.max_new_tokens, self.temperature = max_new_tokens, temperature
         self.max_input_len = int(max_input_len)
 
+    def prepare_prompt_parts(self, prefix: str, context: str, suffix: str, max_tokens: int | None = None):
+        """Apply Qwen's chat template while preserving evidence boundaries.
+
+        ReDeEP must analyse exactly the prompt used during generation.  The
+        returned prefix/context/suffix therefore describe the formatted chat
+        prompt, rather than the raw user instruction.
+        """
+        from .prompt_utils import fit_prompt_parts
+
+        prefix, context, suffix = str(prefix), str(context), str(suffix)
+        raw_prompt = prefix + context + suffix
+        formatted_prompt = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": raw_prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        context_offset = formatted_prompt.find(context)
+        if context and context_offset < 0:
+            raise ValueError("Qwen chat template did not preserve the evidence text")
+        if context:
+            formatted_prefix = formatted_prompt[:context_offset]
+            formatted_suffix = formatted_prompt[context_offset + len(context) :]
+        else:
+            formatted_prefix, formatted_suffix = formatted_prompt, ""
+        parts = fit_prompt_parts(
+            self.tokenizer,
+            formatted_prefix,
+            context,
+            formatted_suffix,
+            self.max_input_len if max_tokens is None else int(max_tokens),
+        )
+        parts["chat_template"] = True
+        return parts
+
     def generate_with_token_ids(self, prompt: str):
         inputs = self.tokenizer(
             prompt,

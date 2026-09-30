@@ -15,6 +15,8 @@
 
 当前模型是本地的 `Qwen/Qwen3-4B-Instruct-2507`，模型下载使用 ModelScope；不使用原始 ReDeeP 的 LLaMA2-7B，也不实现 AARF。正式入口是 `src.run_oracle`，检测入口是 `src.run_redeep`。
 
+生成时使用 Qwen 模型自带的 chat template，并把格式化后的实际 prompt 保存给 ReDeeP。MuSiQue 若提供每跳子问题，会将当前子问题与该跳 gold evidence 一起输入；HotpotQA 和 2Wiki 没有子问题字段时，仅依据原问题、当前跳证据和已有中间结果逐跳生成。
+
 ## 数据文件
 
 ```text

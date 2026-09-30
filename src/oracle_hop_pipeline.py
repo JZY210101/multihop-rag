@@ -40,6 +40,8 @@ class OracleIterativePipeline:
             raise ValueError("f1_threshold must be in [0, 1]")
 
     def _parts(self, prefix: str, context: str, suffix: str) -> Dict[str, Any]:
+        if hasattr(self.generator, "prepare_prompt_parts"):
+            return self.generator.prepare_prompt_parts(prefix, context, suffix, self.max_input_len)
         return fit_prompt_parts(
             getattr(self.generator, "tokenizer", None),
             prefix,
@@ -62,20 +64,28 @@ class OracleIterativePipeline:
         total_hops = len(sample.hops)
         for position, hop in enumerate(sample.hops, start=1):
             evidence = _evidence_text(hop.get("documents", []), position)
+            sub_question = str(hop.get("sub_question", "")).strip()
             previous = "\n".join(
                 f"Intermediate result {i}: {result}" for i, result in enumerate(previous_results, start=1)
             ) or "(none; this is the first hop)"
             is_final = position == total_hops
-            instruction = (
-                "Produce the final answer to the original question. Give only the answer."
-                if is_final
-                else "Produce the concise intermediate fact needed by the next hop. Do not give the final answer yet."
-            )
+            if is_final:
+                instruction = "Answer the original question. Return only the shortest answer span, with no explanation."
+            elif sub_question:
+                instruction = (
+                    "Answer the current sub-question. Return only the concise intermediate answer needed by the next hop."
+                )
+            else:
+                instruction = (
+                    "Produce the concise intermediate fact needed by the next hop. Do not answer the original question yet."
+                )
+            sub_question_line = f"Current sub-question: {sub_question}\n" if sub_question else ""
             parts = self._parts(
                 "Solve the multi-hop question one hop at a time. Use only the supplied gold evidence.\n"
                 f"Original question: {sample.question}\n"
                 f"Previous intermediate results:\n{previous}\n"
-                f"Current hop: {position}/{total_hops}\n",
+                f"Current hop: {position}/{total_hops}\n"
+                f"{sub_question_line}",
                 evidence,
                 f"\n{instruction}\nResponse:",
             )
@@ -137,9 +147,12 @@ def run_oracle_dataset(
     max_new_tokens: int = 128,
     allow_context_fallback: bool = False,
 ) -> List[Dict[str, Any]]:
-    samples = load_dataset(input_path, dataset_name, allow_context_fallback=allow_context_fallback)
-    if max_records is not None:
-        samples = samples[: max(0, int(max_records))]
+    samples = load_dataset(
+        input_path,
+        dataset_name,
+        allow_context_fallback=allow_context_fallback,
+        max_records=max_records,
+    )
     generator = Generator(model_path, max_new_tokens=max_new_tokens, max_input_len=max_input_len)
     pipeline = OracleIterativePipeline(generator, f1_threshold=f1_threshold, max_input_len=max_input_len)
     return [pipeline.run_sample(sample) for sample in samples]

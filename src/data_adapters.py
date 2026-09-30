@@ -1,7 +1,8 @@
 """统一适配三个目标多跳数据集，并保留通用格式别名。"""
 import json
+from itertools import islice
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 from .schema import Sample
 
 
@@ -216,12 +217,16 @@ def load_dataset(
     dataset: str,
     default_hop: int = 2,
     allow_context_fallback: bool = False,
+    max_records: Optional[int] = None,
 ) -> List[Sample]:
     supported = {"hotpotqa", "musique", "2wikimultihopqa", "2wiki", "multihop-rag", "multihoprag"}
     name = dataset.lower().replace("_", "-")
     if name not in supported:
         raise ValueError(f"Unsupported dataset: {dataset}")
+    records: Iterable[Dict[str, Any]] = _read_records(path)
+    if max_records is not None:
+        records = islice(records, max(0, int(max_records)))
     return [
         normalize_record(r, i, default_hop, allow_context_fallback=allow_context_fallback)
-        for i, r in enumerate(_read_records(path))
+        for i, r in enumerate(records)
     ]
