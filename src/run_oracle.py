@@ -26,6 +26,10 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42, help="Random sampling seed")
     parser.add_argument("--max-input-len", type=int, default=3840)
     parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="Independent samples generated together at each hop; start with 4 and lower if OOM")
+    parser.add_argument("--progress-every", type=int, default=10,
+                        help="Print progress after this many completed samples")
     parser.add_argument("--f1-threshold", type=float, default=DEFAULT_F1_THRESHOLD)
     parser.add_argument(
         "--allow-context-fallback",
@@ -44,6 +48,8 @@ def main() -> None:
         allow_context_fallback=args.allow_context_fallback,
         sampling_strategy=args.sampling_strategy,
         seed=args.seed,
+        batch_size=args.batch_size,
+        progress_every=args.progress_every,
     )
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)

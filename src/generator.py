@@ -71,7 +71,10 @@ class Generator:
         }
         if self.temperature > 0:
             generation_kwargs["temperature"] = self.temperature
-        output = self.model.generate(**inputs, **generation_kwargs)
+        import torch
+
+        with torch.inference_mode():
+            output = self.model.generate(**inputs, **generation_kwargs)
         generated = output[0][inputs["input_ids"].shape[1] :]
         from .prompt_utils import normalize_generated_token_ids
 
@@ -82,6 +85,49 @@ class Generator:
         )
         text = self.tokenizer.decode(token_ids, skip_special_tokens=True).strip()
         return text, token_ids
+
+    def generate_with_token_ids_batch(self, prompts):
+        """Generate several prompts in one forward/generation batch.
+
+        Batching is only a throughput optimization: each prompt remains an
+        independent sample and the caller still invokes this once per hop.
+        """
+        import torch
+
+        prompts = list(prompts)
+        if not prompts:
+            return []
+        old_padding_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "left"
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        inputs = self.tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.max_input_len,
+        ).to(self.model.get_input_embeddings().weight.device)
+        generation_kwargs = {
+            "max_new_tokens": self.max_new_tokens,
+            "do_sample": self.temperature > 0,
+        }
+        if self.temperature > 0:
+            generation_kwargs["temperature"] = self.temperature
+        with torch.inference_mode():
+            output = self.model.generate(**inputs, **generation_kwargs)
+        input_width = inputs["input_ids"].shape[1]
+        from .prompt_utils import normalize_generated_token_ids
+
+        result = []
+        for row in output:
+            generated = row[input_width:]
+            token_ids = normalize_generated_token_ids(
+                generated, self.tokenizer.eos_token_id, self.tokenizer.pad_token_id
+            )
+            result.append((self.tokenizer.decode(token_ids, skip_special_tokens=True).strip(), token_ids))
+        self.tokenizer.padding_side = old_padding_side
+        return result
 
     def generate(self, prompt: str) -> str:
         return self.generate_with_token_ids(prompt)[0]
