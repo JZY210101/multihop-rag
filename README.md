@@ -91,6 +91,8 @@ PYTHONPATH=. python -m src.run_redeep evaluate \
 
 三个数据集分别使用各自的 train calibration。第一次校准可加 `--max-records 500`；完整输出建议加 `--no-token-scores` 以节省磁盘。
 
+数据文件可能按 hop 排序。校准子集不要直接取前 500 条，应在生成 train trace 时增加 `--sampling-strategy random --seed 42`；只做 5 条连通性检查时继续使用默认的 prefix 即可。
+
 ## 标签规则
 
 统一使用最终答案 token-F1：

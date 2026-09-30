@@ -132,6 +132,37 @@ class OraclePipelineTests(unittest.TestCase):
             samples = load_dataset(str(path), "musique", max_records=1)
         self.assertEqual([sample.sample_id for sample in samples], ["0"])
 
+    def test_random_dataset_sample_is_deterministic_and_not_a_prefix(self):
+        records = [
+            {
+                "id": str(index),
+                "question": "q",
+                "answer": "a",
+                "metadata": {
+                    "question_decomposition": [
+                        {
+                            "question": "q",
+                            "answer": "a",
+                            "support_paragraph": {
+                                "title": "p",
+                                "paragraph_text": "evidence",
+                                "is_supporting": True,
+                            },
+                        }
+                    ]
+                },
+            }
+            for index in range(20)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "data.jsonl"
+            path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+            first = load_dataset(str(path), "musique", max_records=5, sampling_strategy="random", seed=7)
+            second = load_dataset(str(path), "musique", max_records=5, sampling_strategy="random", seed=7)
+        first_ids = [sample.sample_id for sample in first]
+        self.assertEqual(first_ids, [sample.sample_id for sample in second])
+        self.assertNotEqual(first_ids, ["0", "1", "2", "3", "4"])
+
 
 if __name__ == "__main__":
     unittest.main()

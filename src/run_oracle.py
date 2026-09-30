@@ -17,6 +17,13 @@ def main() -> None:
     parser.add_argument("--output", required=True, help="Output JSONL trace file")
     parser.add_argument("--model", default="model/Qwen3-4B-Instruct-2507")
     parser.add_argument("--max-records", type=int, default=None)
+    parser.add_argument(
+        "--sampling-strategy",
+        choices=("prefix", "random"),
+        default="prefix",
+        help="Use prefix for quick smoke tests or deterministic random sampling for representative subsets",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random sampling seed")
     parser.add_argument("--max-input-len", type=int, default=3840)
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--f1-threshold", type=float, default=DEFAULT_F1_THRESHOLD)
@@ -35,6 +42,8 @@ def main() -> None:
         max_input_len=args.max_input_len,
         max_new_tokens=args.max_new_tokens,
         allow_context_fallback=args.allow_context_fallback,
+        sampling_strategy=args.sampling_strategy,
+        seed=args.seed,
     )
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)

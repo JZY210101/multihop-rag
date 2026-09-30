@@ -27,6 +27,8 @@ PYTHONPATH=. python -m src.run_oracle \
 
 HotpotQA 使用 `data/FlashRAG_Data/hotpotqa/train_gold.jsonl` 和 `data/FlashRAG_Data/hotpotqa/dev_gold.jsonl`。先用 train 输出执行 `src.run_redeep fit` 校准，再用同一 calibration 对 dev 执行 `evaluate`。三个数据集分别校准。
 
+小规模 train calibration 要使用 `--sampling-strategy random --seed 42`，避免数据文件按 hop 排序造成子集只有 2-hop。正式全量运行不需要该参数。
+
 ## 标签
 
 最终答案使用共享 token-F1 弱标签：

@@ -2,6 +2,7 @@
 import json
 from itertools import islice
 from pathlib import Path
+import random
 from typing import Any, Dict, Iterable, List, Optional
 from .schema import Sample
 
@@ -218,15 +219,34 @@ def load_dataset(
     default_hop: int = 2,
     allow_context_fallback: bool = False,
     max_records: Optional[int] = None,
+    sampling_strategy: str = "prefix",
+    seed: int = 42,
 ) -> List[Sample]:
     supported = {"hotpotqa", "musique", "2wikimultihopqa", "2wiki", "multihop-rag", "multihoprag"}
     name = dataset.lower().replace("_", "-")
     if name not in supported:
         raise ValueError(f"Unsupported dataset: {dataset}")
-    records: Iterable[Dict[str, Any]] = _read_records(path)
+    if sampling_strategy not in {"prefix", "random"}:
+        raise ValueError("sampling_strategy must be 'prefix' or 'random'")
+
+    indexed_records: Iterable[Any] = enumerate(_read_records(path))
     if max_records is not None:
-        records = islice(records, max(0, int(max_records)))
+        limit = max(0, int(max_records))
+        if sampling_strategy == "prefix":
+            indexed_records = islice(indexed_records, limit)
+        else:
+            rng = random.Random(int(seed))
+            reservoir = []
+            for stream_index, record in indexed_records:
+                item = (stream_index, record)
+                if len(reservoir) < limit:
+                    reservoir.append(item)
+                    continue
+                replacement = rng.randint(0, stream_index)
+                if replacement < limit:
+                    reservoir[replacement] = item
+            indexed_records = sorted(reservoir, key=lambda item: item[0])
     return [
-        normalize_record(r, i, default_hop, allow_context_fallback=allow_context_fallback)
-        for i, r in enumerate(records)
+        normalize_record(record, index, default_hop, allow_context_fallback=allow_context_fallback)
+        for index, record in indexed_records
     ]

@@ -146,12 +146,16 @@ def run_oracle_dataset(
     max_input_len: int = 3840,
     max_new_tokens: int = 128,
     allow_context_fallback: bool = False,
+    sampling_strategy: str = "prefix",
+    seed: int = 42,
 ) -> List[Dict[str, Any]]:
     samples = load_dataset(
         input_path,
         dataset_name,
         allow_context_fallback=allow_context_fallback,
         max_records=max_records,
+        sampling_strategy=sampling_strategy,
+        seed=seed,
     )
     generator = Generator(model_path, max_new_tokens=max_new_tokens, max_input_len=max_input_len)
     pipeline = OracleIterativePipeline(generator, f1_threshold=f1_threshold, max_input_len=max_input_len)
