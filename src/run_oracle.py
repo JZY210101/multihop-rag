@@ -37,26 +37,34 @@ def main() -> None:
         help="Allow heuristic extraction from provided context when exact gold titles are absent; not a strict oracle run",
     )
     args = parser.parse_args()
-    records = run_oracle_dataset(
-        input_path=args.input,
-        dataset_name=args.dataset,
-        model_path=args.model,
-        max_records=args.max_records,
-        f1_threshold=args.f1_threshold,
-        max_input_len=args.max_input_len,
-        max_new_tokens=args.max_new_tokens,
-        allow_context_fallback=args.allow_context_fallback,
-        sampling_strategy=args.sampling_strategy,
-        seed=args.seed,
-        batch_size=args.batch_size,
-        progress_every=args.progress_every,
-    )
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    print(f"Saved {len(records)} oracle iterative traces to {destination}")
+        written = 0
+
+        def write_batch(records):
+            nonlocal written
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            handle.flush()
+            written += len(records)
+
+        run_oracle_dataset(
+            input_path=args.input,
+            dataset_name=args.dataset,
+            model_path=args.model,
+            max_records=args.max_records,
+            f1_threshold=args.f1_threshold,
+            max_input_len=args.max_input_len,
+            max_new_tokens=args.max_new_tokens,
+            allow_context_fallback=args.allow_context_fallback,
+            sampling_strategy=args.sampling_strategy,
+            seed=args.seed,
+            batch_size=args.batch_size,
+            progress_every=args.progress_every,
+            batch_callback=write_batch,
+        )
+    print(f"Saved {written} oracle iterative traces to {destination}")
 
 
 if __name__ == "__main__":

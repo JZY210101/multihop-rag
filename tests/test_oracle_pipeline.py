@@ -19,6 +19,9 @@ class DummyGenerator:
         self.prompts.append(prompt)
         return f"intermediate {len(self.prompts)}", [10 + len(self.prompts)]
 
+    def generate_with_token_ids_batch(self, prompts):
+        return [self.generate_with_token_ids(prompt) for prompt in prompts]
+
 
 class ChatTokenizer:
     def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
@@ -103,6 +106,44 @@ class OraclePipelineTests(unittest.TestCase):
         self.assertEqual(parts["prompt"], generator.prompts[0])
         self.assertEqual(parts["prompt"], parts["prefix"] + parts["context"] + parts["suffix"])
         self.assertIn("<assistant>", parts["suffix"])
+
+    def test_batches_finish_all_hops_before_next_batch(self):
+        samples = [
+            normalize_record(
+                {
+                    "id": str(index),
+                    "question": f"Question {index}",
+                    "answer": "final",
+                    "metadata": {
+                        "question_decomposition": [
+                            {"question": "first", "answer": "one", "support_paragraph": {
+                                "title": f"A{index}", "paragraph_text": f"Evidence A{index}", "is_supporting": True}},
+                            {"question": "second", "answer": "final", "support_paragraph": {
+                                "title": f"B{index}", "paragraph_text": f"Evidence B{index}", "is_supporting": True}},
+                        ]
+                    },
+                },
+                index=index,
+                default_hop=2,
+            )
+            for index in range(3)
+        ]
+        written_batches = []
+        generator = DummyGenerator()
+        results = OracleIterativePipeline(generator).run_samples(
+            samples,
+            batch_size=2,
+            progress_every=1,
+            batch_callback=lambda records: written_batches.append([record["id"] for record in records]),
+        )
+        self.assertEqual(results, [])
+        self.assertEqual(written_batches, [["0", "1"], ["2"]])
+        self.assertIn("Evidence A0", generator.prompts[0])
+        self.assertIn("Evidence A1", generator.prompts[1])
+        self.assertIn("Evidence B0", generator.prompts[2])
+        self.assertIn("Evidence B1", generator.prompts[3])
+        self.assertIn("Evidence A2", generator.prompts[4])
+        self.assertIn("Evidence B2", generator.prompts[5])
 
     def test_load_dataset_applies_limit_while_reading(self):
         records = [
