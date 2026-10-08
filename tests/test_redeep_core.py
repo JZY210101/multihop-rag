@@ -14,6 +14,7 @@ from src.prompt_utils import (
 from src.redeep.calibration import ReDeEPCalibrator
 from src.redeep.scores import stable_jsd
 from src.redeep.io import build_prompt_parts, enrich_record, read_records
+from src.run_redeep import _metrics
 
 
 class CharacterTokenizer:
@@ -31,6 +32,25 @@ class DecodeTokenizer:
 
 
 class ReDeEPCoreTests(unittest.TestCase):
+    def test_metrics_include_threshold_free_auprc(self):
+        records = [
+            {
+                "hallucination_label": label,
+                "redeep_score": score,
+                "redeep_prediction": prediction,
+                "hop_num": 2,
+            }
+            for label, score, prediction in [
+                (0, 0.1, 0),
+                (0, 0.4, 1),
+                (1, 0.35, 0),
+                (1, 0.8, 1),
+            ]
+        ]
+        metrics = _metrics(records)
+        self.assertAlmostEqual(metrics["auprc"], 5.0 / 6.0)
+        self.assertAlmostEqual(metrics["by_hop"]["2"]["auprc"], 5.0 / 6.0)
+
     def test_prompt_truncation_preserves_both_ends_and_exact_parts(self):
         tokenizer = CharacterTokenizer()
         context = "first evidence " + ("middle " * 20) + "last evidence"

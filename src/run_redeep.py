@@ -149,12 +149,13 @@ def _metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         result["warning"] = "Only one class is present; AUC/F1 are undefined"
         return result
     try:
-        from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
+        from sklearn.metrics import average_precision_score, f1_score, precision_score, recall_score, roc_auc_score
 
         predictions = [int(record.get("redeep_prediction", 0)) for record in labeled]
         result.update(
             {
                 "roc_auc": float(roc_auc_score(labels, scores)),
+                "auprc": float(average_precision_score(labels, scores)),
                 "f1": float(f1_score(labels, predictions, zero_division=0)),
                 "precision": float(precision_score(labels, predictions, zero_division=0)),
                 "recall": float(recall_score(labels, predictions, zero_division=0)),
@@ -176,9 +177,13 @@ def _metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         subset_scores = [float(record["redeep_score"]) for record in subset]
         if len(set(subset_labels)) >= 2:
             try:
-                from sklearn.metrics import roc_auc_score
+                from sklearn.metrics import average_precision_score, roc_auc_score
 
-                by_hop[str(hop)] = {"count": len(subset), "roc_auc": float(roc_auc_score(subset_labels, subset_scores))}
+                by_hop[str(hop)] = {
+                    "count": len(subset),
+                    "roc_auc": float(roc_auc_score(subset_labels, subset_scores)),
+                    "auprc": float(average_precision_score(subset_labels, subset_scores)),
+                }
             except (ImportError, ValueError):
                 pass
         else:
