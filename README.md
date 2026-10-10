@@ -30,7 +30,7 @@ python -m src.run_oracle \
 幻觉分离。`configs/flashrag_fixed_hop.yaml` 和 `src.run` 保留为旧的检索式兼容入口；正式
 实验使用 `src.run_oracle` 和 `configs/oracle_iterative.yaml`。
 
-直接使用 FlashRAG 原生的 `Config`、`get_dataset`、`get_retriever`、`get_generator` 和 `BasicPipeline`，只在 Pipeline 层增加固定 hop 控制与 trace 记录。FlashRAG 官方已预处理 HotpotQA、2WikiMultiHopQA、MuSiQue；MultiHop-RAG 若不在当前 FlashRAG 数据包中，需要按同样的 JSONL 格式放入 `data_dir/multihop-rag/`。
+旧版检索流程使用 FlashRAG 的 Config、retriever、generator 和 Pipeline；当前原始数据入口不依赖 FlashRAG，也不需要准备外部语料或索引。
 
 ## 安装
 
@@ -38,7 +38,7 @@ python -m src.run_oracle \
 pip install -r requirements.txt
 ```
 
-注意：这里使用 GitHub 官方 FlashRAG 仓库，不使用 PyPI 上同名的非官方/不完整包。
+当前依赖仅覆盖原始数据、Qwen 生成与 ReDeEP 检测；若使用历史检索入口，需另行安装 GitHub 官方 FlashRAG。
 raw/processed 数据文件使用 Git LFS；clone 本仓库前需安装 Git LFS，clone 后可执行
 `git lfs pull` 确认数据已完整下载。
 
@@ -55,28 +55,13 @@ PYTHONPATH=. python -m src.run_oracle \
   --output outputs/musique_dev_oracle.jsonl
 ```
 
-输出中的每条记录包含 `hop_records`、每一跳的 prompt/response/token ids、最终答案 F1 和
-`hallucination_label`。每一跳只读取该 hop 的 gold supporting evidence，后一跳会接收前一跳
-的中间结果。正式 ReDeeP 评分仍通过 `src.run_redeep` 对生成的最终记录进行校准和评估。
+输出中的每条记录包含 `hop_records`、每步的 prompt/response/token IDs、最终答案 EM/F1 和
+`hallucination_label`。B 方式每步加入一个完整 gold supporting paragraph，同时保留此前证据
+和模型中间响应。ReDeEP 通过 `src.run_redeep` 对最终生成记录提取 ECS/PKS、校准和评估。
 
-严格 oracle 模式要求数据文件中的支持标题确实存在于上下文中；如果缺失，程序会明确报错，
-不会把候选上下文伪装成 gold evidence。`--allow-context-fallback` 只用于 smoke test，产生
-的记录会标记为启发式 fallback，不应作为正式实验结果。
-
-当前仓库的 FlashRAG HotpotQA 导出在部分样本中缺少原始支持页面。可用官方 HotpotQA
-文件补齐后再运行正式实验（脚本不会覆盖原始 JSONL）：
-
-```bash
-PYTHONPATH=. python scripts/prepare_hotpot_gold.py --split train \
-  --input data/FlashRAG_Data/hotpotqa/train.jsonl \
-  --output data/FlashRAG_Data/hotpotqa/train_gold.jsonl
-PYTHONPATH=. python scripts/prepare_hotpot_gold.py --split dev \
-  --input data/FlashRAG_Data/hotpotqa/dev.jsonl \
-  --output data/FlashRAG_Data/hotpotqa/dev_gold.jsonl
-```
-
-脚本默认从 HotpotQA 官方 GitHub 下载原始文件，也可以用 `--source /path/to/file.json`
-指定已下载文件。匹配依据是规范化后的 question+answer，并会检查每条样本都成功匹配。
+当前 processed 已逐条对照原始数据核查完整支持段落。缺失支持段落或完整证据超过输入上限时，
+程序明确报错；正式实验不启用 `--allow-evidence-truncation`。旧版 HotpotQA 补齐脚本和
+`--allow-context-fallback` 不属于当前运行入口。
 
 ## 旧版检索式兼容流程
 
@@ -147,21 +132,23 @@ retrieval-aware 评估，支持文档未被检索到的样本保留
 当前 ReDeEP 适配使用本地 `model/Qwen3-4B-Instruct-2507` 提取内部状态。模型通过 ModelScope
 下载，不使用 Hugging Face 在线下载，也不使用原始
 `ReDEeP-ICLR` 中的 LLaMA 实现，也不包含 AARF 干预。检测器计算完整的 ECS + PKS
-联合分数，支持 token-level 和 chunk-level 两种粒度。
+联合分数，当前运行入口仅使用 token 模式。
 本适配只输出完整 ECS + PKS 联合 ReDeEP；不实现 AARF，也不生成 ECS-only、PKS-only
 或其他对照组结果。
 
-先运行多跳 pipeline，分别生成包含 `fixed_hop_trace`、`answer_prompt` 和
-`redeep_records` 的 train/dev 输出：
+先用原始完整支持段落生成 train/dev trace。以下为小规模命令，完整数据集命令见
+[原始数据运行指南](src/redeep/原始数据运行指南.md)：
 
 ```bash
-PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml \
-  --dataset_name hotpotqa --split train \
-  --output outputs/hotpotqa_train_fixed_hop.json
+PYTHONPATH=. python -m src.run_oracle \
+  --input data/processed/hotpotqa/train.jsonl --dataset hotpotqa \
+  --max-records 64 --sampling-strategy random --seed 42 --batch-size 4 \
+  --output outputs/hotpotqa_train_oracle.jsonl
 
-PYTHONPATH=. python -m src.run --config configs/flashrag_fixed_hop.yaml \
-  --dataset_name hotpotqa --split dev \
-  --output outputs/hotpotqa_dev_fixed_hop.json
+PYTHONPATH=. python -m src.run_oracle \
+  --input data/processed/hotpotqa/dev.jsonl --dataset hotpotqa \
+  --max-records 16 --sampling-strategy random --seed 42 --batch-size 4 \
+  --output outputs/hotpotqa_dev_oracle.jsonl
 ```
 
 然后使用训练集校准 ReDeEP 的 attention heads、FFN layers、归一化范围和联合权重，再在
@@ -170,27 +157,19 @@ dev 集固定校准参数评估：
 ```bash
 # 训练集校准，并输出训练集分数和 calibration 文件
 PYTHONPATH=. python -m src.run_redeep fit \
-  --input outputs/hotpotqa_train_fixed_hop.json \
+  --input outputs/hotpotqa_train_oracle.jsonl \
   --output outputs/redeep_hotpotqa_train.jsonl \
-  --calibration outputs/redeep_hotpotqa.json
+  --calibration outputs/redeep_hotpotqa.json --batch-size 1 --no-token-scores
 
 # dev 集只评估，不重新选择 feature
 PYTHONPATH=. python -m src.run_redeep evaluate \
-  --input outputs/hotpotqa_dev_fixed_hop.json \
+  --input outputs/hotpotqa_dev_oracle.jsonl \
   --output outputs/redeep_hotpotqa_dev.jsonl \
-  --calibration outputs/redeep_hotpotqa.json
+  --calibration outputs/redeep_hotpotqa.json --batch-size 1 --no-token-scores
 ```
 
-chunk-level 需要额外指定 BGE embedding，例如：
-
-```bash
-PYTHONPATH=. python -m src.run_redeep fit \
-  --input outputs/hotpotqa_train_fixed_hop.json \
-  --output outputs/redeep_hotpotqa_chunk_train.jsonl \
-  --calibration outputs/redeep_hotpotqa_chunk.json \
-  --granularity chunk \
-  --embedding-model model/bge-base-en-v1.5
-```
+fit 的生成样本必须同时包含两类标签。自动小规模检查脚本会在必要时扩大 train 子集，
+不修改或伪造标签。当前 CLI 不提供 chunk 或 embedding-model 参数。
 
 三个数据集分别运行时，将输入文件和 calibration 文件按数据集命名即可。默认
 `--label-mode f1_answer --f1-threshold 0.30`；若要排除支持文档未被检索到的样本，使用
@@ -198,18 +177,16 @@ PYTHONPATH=. python -m src.run_redeep fit \
 别名；这些参数名保持兼容，实际都使用共享 EM/F1 与 yes/no 规则。
 标签规则已更新，旧校准文件不能直接用于新版 evaluate，需要重新 fit。
 
-Qwen ReDeEP 每条样本需要对完整 prompt + response 做一次全序列 forward，并返回所有
-attention 矩阵和 FFN residual，因此实际运行需要 GPU、足够显存和 `requirements.txt`
-中的 `torch`、`transformers`、`flashrag` 依赖。模型权重、索引和输出不会提交；三个问答
+Qwen ReDeEP 对完整 prompt + response 做全序列 forward，支持通过 `--batch-size` 批量执行，
+并提取 attention 和 FFN 内部状态，因此需要 GPU、足够显存和 `requirements.txt`
+中的 `torch`、`transformers` 等依赖。模型权重和运行输出不会提交；三个问答
 数据集使用 Git LFS 管理并随仓库上传。
 
-生成 prompt 默认限制为 3840 tokens，并为最多 256 个回答 token 预留空间；ReDeEP 的
-完整 question + evidence + response 默认上限为 4096 tokens。生成前若 evidence 超长，会
-同时保留最早和最后部分，并保存实际使用的 `prompt_parts` 以及 Qwen 实际生成的
-`response_token_ids`。ReDeEP 使用这两部分复现原生成序列，不会在检测阶段静默改写 prompt；
-旧输出没有 token IDs 时会退回文本分词。完整序列若仍超过 `--max-input-tokens`，该样本会
-明确标为不可评分，需要降低 `generator_max_input_len` 后重新生成。需要更长上下文时可同时
-调整两个上限，但 eager attention 的显存开销随序列长度近似二次增长。
+生成 prompt 默认限制为 3840 tokens，回答默认最多 128 tokens；ReDeEP 的完整
+prompt + response 默认上限为 4096 tokens。完整证据超长时生成阶段默认停止，不静默裁剪。
+trace 保存实际使用的 `prompt_parts` 和 Qwen 生成的 `response_token_ids`，检测阶段复现原序列。
+完整序列超过 `--max-input-tokens` 时会明确标为不可评分；应检查具体样本并同时调整生成与
+检测的长度上限，保持完整证据。更长序列的 attention 显存开销近似二次增长。
 HotpotQA 训练集约 9 万条，不建议第一次运行就处理全部数据；可以先加
 `--max-records 500` 建立包含两类标签的 calibration 子集，最终 dev 评估时去掉该参数。
 正式处理完整数据集建议增加 `--no-token-scores`，保留聚合 ECS/PKS 和最终分数，仅省略
