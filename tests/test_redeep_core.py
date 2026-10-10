@@ -84,8 +84,12 @@ class ReDeEPCoreTests(unittest.TestCase):
                 argv = ['run_redeep', command, '--input', str(source), '--output', str(output),
                         '--calibration', str(calibration), '--top-heads', '1', '--top-layers', '1',
                         '--batch-size', '2', '--no-token-scores']
-                with patch('sys.argv', argv), patch('src.run_redeep.ReDeEPDetector', side_effect=make_detector), redirect_stdout(io.StringIO()):
+                stdout = io.StringIO()
+                with patch('sys.argv', argv), patch('src.run_redeep.ReDeEPDetector', side_effect=make_detector), redirect_stdout(stdout):
                     run_redeep()
+                metrics = json.loads(stdout.getvalue().splitlines()[-1])['metrics']
+                self.assertIn('acc', metrics)
+                self.assertEqual(metrics['count'], len(cases))
                 scored = read_records(str(output))
                 self.assertEqual(len(scored), len(cases))
                 for record, original, (_, _, expected) in zip(scored, records, cases):
@@ -121,7 +125,7 @@ class ReDeEPCoreTests(unittest.TestCase):
         calibrator.runtime_settings = dict(settings)
         calibrator.validate_runtime(settings)
 
-    def test_metrics_include_threshold_free_auprc(self):
+    def test_metrics_include_accuracy_and_threshold_free_auprc(self):
         records = [
             {
                 "hallucination_label": label,
@@ -137,8 +141,34 @@ class ReDeEPCoreTests(unittest.TestCase):
             ]
         ]
         metrics = _metrics(records)
+        self.assertAlmostEqual(metrics["acc"], 0.5)
         self.assertAlmostEqual(metrics["auprc"], 5.0 / 6.0)
+        self.assertAlmostEqual(metrics["by_hop"]["2"]["acc"], 0.5)
         self.assertAlmostEqual(metrics["by_hop"]["2"]["auprc"], 5.0 / 6.0)
+
+    def test_accuracy_is_defined_for_one_class_and_excludes_unscored_or_unlabeled_records(self):
+        records = [
+            {"hallucination_label": 0, "redeep_score": 0.1, "redeep_prediction": 0},
+            {"hallucination_label": 0, "redeep_score": 0.2, "redeep_prediction": 1},
+            {"hallucination_label": 1, "redeep_score": None, "redeep_prediction": None},
+            {"hallucination_label": None, "redeep_score": 0.8, "redeep_prediction": 1},
+        ]
+        metrics = _metrics(records)
+        self.assertEqual(metrics["count"], 2)
+        self.assertEqual(metrics["acc"], 0.5)
+        self.assertNotIn("roc_auc", metrics)
+
+    def test_accuracy_is_reported_for_hop_groups_with_one_class(self):
+        records = [
+            {"hallucination_label": 0, "redeep_score": 0.1, "redeep_prediction": 0, "hop_num": 2},
+            {"hallucination_label": 0, "redeep_score": 0.2, "redeep_prediction": 1, "hop_num": 2},
+            {"hallucination_label": 1, "redeep_score": 0.8, "redeep_prediction": 1, "hop_num": 3},
+            {"hallucination_label": 1, "redeep_score": 0.9, "redeep_prediction": 1, "hop_num": 3},
+        ]
+        metrics = _metrics(records)
+        self.assertEqual(metrics["acc"], 0.75)
+        self.assertEqual(metrics["by_hop"]["2"]["acc"], 0.5)
+        self.assertEqual(metrics["by_hop"]["3"]["acc"], 1.0)
 
     def test_prompt_truncation_preserves_both_ends_and_exact_parts(self):
         tokenizer = CharacterTokenizer()

@@ -144,14 +144,18 @@ def _metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         return {"count": 0, "warning": "No labeled records available"}
     labels = [int(record["hallucination_label"]) for record in labeled]
     scores = [float(record["redeep_score"]) for record in labeled]
-    result: Dict[str, Any] = {"count": len(labeled), "positive_rate": sum(labels) / len(labels)}
+    predictions = [int(record.get("redeep_prediction", 0)) for record in labeled]
+    result: Dict[str, Any] = {
+        "count": len(labeled),
+        "positive_rate": sum(labels) / len(labels),
+        "acc": sum(label == prediction for label, prediction in zip(labels, predictions)) / len(labels),
+    }
     if len(set(labels)) < 2:
         result["warning"] = "Only one class is present; AUC/F1 are undefined"
         return result
     try:
         from sklearn.metrics import average_precision_score, f1_score, precision_score, recall_score, roc_auc_score
 
-        predictions = [int(record.get("redeep_prediction", 0)) for record in labeled]
         result.update(
             {
                 "roc_auc": float(roc_auc_score(labels, scores)),
@@ -175,19 +179,23 @@ def _metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         subset = [record for record in labeled if record.get("hop_num") == hop]
         subset_labels = [int(record["hallucination_label"]) for record in subset]
         subset_scores = [float(record["redeep_score"]) for record in subset]
+        subset_predictions = [int(record.get("redeep_prediction", 0)) for record in subset]
+        by_hop[str(hop)] = {
+            "count": len(subset),
+            "acc": sum(label == prediction for label, prediction in zip(subset_labels, subset_predictions)) / len(subset),
+        }
         if len(set(subset_labels)) >= 2:
             try:
                 from sklearn.metrics import average_precision_score, roc_auc_score
 
-                by_hop[str(hop)] = {
-                    "count": len(subset),
+                by_hop[str(hop)].update({
                     "roc_auc": float(roc_auc_score(subset_labels, subset_scores)),
                     "auprc": float(average_precision_score(subset_labels, subset_scores)),
-                }
+                })
             except (ImportError, ValueError):
                 pass
         else:
-            by_hop[str(hop)] = {"count": len(subset), "warning": "Only one class is present"}
+            by_hop[str(hop)]["warning"] = "Only one class is present"
     if by_hop:
         result["by_hop"] = by_hop
     return result

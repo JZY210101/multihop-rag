@@ -213,4 +213,4 @@ head/layer 聚合特征和最终分数仍会保留，只省略体积很大的逐
 `hallucination_label`、`base_hallucination_label`、`hallucination_label_method`、
 `hallucination_label_reason`、`hallucination_label_version`、`answer_for_label`、
 `hallucination_f1_threshold`、`retrieval_sufficient`、`response_token_ids`、token span 和多跳 trace。终端汇总
-输出 ROC-AUC、F1、precision、recall、PCC 及可计算时的按 hop AUC。
+输出 ACC（`acc`）、ROC-AUC、AUPRC（average precision）、F1、precision、recall、PCC；按输入步数分组时也输出 ACC 及可计算的 AUC/AUPRC。
