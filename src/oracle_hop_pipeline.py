@@ -1,292 +1,161 @@
-"""Oracle-evidence, iterative multi-hop generation pipeline.
-
-This pipeline deliberately has no retriever.  It consumes the ordered gold
-supporting documents extracted by :mod:`src.data_adapters`, generates one
-intermediate result per hop, and stores prompt/response traces for ReDeeP.
-"""
+"""Sequential full-paragraph generation with cumulative evidence (strategy B)."""
 
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
 from .data_adapters import load_dataset
-from .hallucination_labels import DEFAULT_F1_THRESHOLD, answer_label_fields
 from .generator import Generator
+from .hallucination_labels import DEFAULT_F1_THRESHOLD, answer_label_fields
 from .prompt_utils import fit_prompt_parts
 
 
-def _evidence_text(documents: List[Dict[str, Any]], hop: int) -> str:
-    lines = []
-    for index, document in enumerate(documents, start=1):
-        title = document.get("title", document.get("doc_id", index))
-        text = document.get("text", document.get("contents", document.get("content", "")))
-        lines.append(f"[hop={hop} doc_id={title}] {text}")
-    return "\n".join(lines)
+def _evidence_text(hops: List[Dict[str, Any]]) -> str:
+    return "\n".join(
+        f"[step={step} doc_id={doc['doc_id']} title={doc['title']}] {doc['text']}"
+        for step, hop in enumerate(hops, start=1) for doc in hop["documents"]
+    )
 
 
 class OracleIterativePipeline:
-    """Generate with one gold evidence group at a time; retrieval is disabled."""
+    """Add one paragraph at a time and retain prior paragraphs and responses."""
 
-    def __init__(
-        self,
-        generator: Generator,
-        f1_threshold: float = DEFAULT_F1_THRESHOLD,
-        max_input_len: Optional[int] = None,
-    ):
+    def __init__(self, generator: Generator, f1_threshold: float = DEFAULT_F1_THRESHOLD,
+                 max_input_len: Optional[int] = None, allow_evidence_truncation: bool = False):
         self.generator = generator
         self.f1_threshold = float(f1_threshold)
         self.max_input_len = max_input_len or getattr(generator, "max_input_len", None)
+        self.allow_evidence_truncation = bool(allow_evidence_truncation)
         if not 0.0 <= self.f1_threshold <= 1.0:
             raise ValueError("f1_threshold must be in [0, 1]")
 
-    def _parts(self, prefix: str, context: str, suffix: str) -> Dict[str, Any]:
-        if hasattr(self.generator, "prepare_prompt_parts"):
-            return self.generator.prepare_prompt_parts(prefix, context, suffix, self.max_input_len)
-        return fit_prompt_parts(
-            getattr(self.generator, "tokenizer", None),
-            prefix,
-            context,
-            suffix,
-            self.max_input_len if getattr(self.generator, "tokenizer", None) is not None else None,
+    def _parts(self, sample, position: int, previous: List[str]) -> Dict[str, Any]:
+        prefix = (
+            "Solve the question as supporting paragraphs arrive one at a time. "
+            "Use only the supplied evidence.\n"
+            f"Original question: {sample.question}\n"
+            "Previous model responses:\n"
+            + ("\n".join(f"Response {i}: {value}" for i, value in enumerate(previous, 1))
+               or "(none; this is the first step)")
+            + f"\nCurrent step: {position}/{len(sample.hops)}\n"
+            "Evidence available so far:\n"
         )
-
-    def _generate(self, prompt: str):
-        if hasattr(self.generator, "generate_with_token_ids"):
-            return self.generator.generate_with_token_ids(prompt)
-        return self.generator.generate(prompt), []
-
-    def run_sample(self, sample) -> Dict[str, Any]:
-        if not sample.hops:
-            raise ValueError(f"Sample {sample.sample_id} has no gold supporting hops")
-
-        hop_records: List[Dict[str, Any]] = []
-        previous_results: List[str] = []
-        total_hops = len(sample.hops)
-        for position, hop in enumerate(sample.hops, start=1):
-            evidence = _evidence_text(hop.get("documents", []), position)
-            sub_question = str(hop.get("sub_question", "")).strip()
-            previous = "\n".join(
-                f"Intermediate result {i}: {result}" for i, result in enumerate(previous_results, start=1)
-            ) or "(none; this is the first hop)"
-            is_final = position == total_hops
-            if is_final:
-                instruction = "Answer the original question. Return only the shortest answer span, with no explanation."
-            elif sub_question:
-                instruction = (
-                    "Answer the current sub-question. Return only the concise intermediate answer needed by the next hop."
-                )
-            else:
-                instruction = (
-                    "Produce the concise intermediate fact needed by the next hop. Do not answer the original question yet."
-                )
-            sub_question_line = f"Current sub-question: {sub_question}\n" if sub_question else ""
-            parts = self._parts(
-                "Solve the multi-hop question one hop at a time. Use only the supplied gold evidence.\n"
-                f"Original question: {sample.question}\n"
-                f"Previous intermediate results:\n{previous}\n"
-                f"Current hop: {position}/{total_hops}\n"
-                f"{sub_question_line}",
-                evidence,
-                f"\n{instruction}\nResponse:",
+        context = _evidence_text(sample.hops[:position])
+        if position == len(sample.hops):
+            instruction = "Answer the original question. Return only the shortest answer span, with no explanation."
+        else:
+            instruction = (
+                "Record the concise facts from the available evidence needed to solve the original question. "
+                "Preserve relevant facts from previous steps. Do not give the final answer yet."
             )
-            response, token_ids = self._generate(parts["prompt"])
-            response = str(response).strip()
-            hop_records.append({
-                "hop": position,
-                "is_final": is_final,
-                "prompt": parts["prompt"],
-                "prompt_parts": parts,
-                "evidence": hop,
-                "response": response,
-                "response_token_ids": token_ids,
-                "gold_intermediate_answer": hop.get("gold_intermediate_answer", ""),
-            })
-            previous_results.append(response)
-
-        final = hop_records[-1]
-        labels = answer_label_fields(final["response"], sample.gold_answers, self.f1_threshold)
-        trace = {
-            "hop_num": total_hops,
-            "mode": "oracle_iterative",
-            "retriever": None,
-            "hops": [
-                {
-                    "hop": item.get("hop"),
-                    "documents": item.get("documents", []),
-                }
-                for item in sample.hops
-            ],
-        }
-        return {
-            "id": sample.sample_id,
-            "dataset": sample.raw.get("dataset", "") if isinstance(sample.raw, dict) else "",
-            "question": sample.question,
-            "gold_answer": sample.answer,
-            "gold_answers": sample.gold_answers,
-            "hop_num": total_hops,
-            "prediction": final["response"],
-            "response_token_ids": final["response_token_ids"],
-            "answer_prompt": final["prompt"],
-            "prompt_parts": final["prompt_parts"],
-            "trace": trace,
-            "hop_records": hop_records,
-            "evidence_mode": "oracle_gold",
-            "hop_mode": "iterative",
-            "retrieval_sufficient": True,
-            **labels,
-        }
+        suffix = f"\n{instruction}\nResponse:"
+        if hasattr(self.generator, "prepare_prompt_parts"):
+            parts = self.generator.prepare_prompt_parts(prefix, context, suffix, self.max_input_len)
+        else:
+            tokenizer = getattr(self.generator, "tokenizer", None)
+            parts = fit_prompt_parts(tokenizer, prefix, context, suffix,
+                                     self.max_input_len if tokenizer is not None else None)
+        if parts.get("context_truncated") and not self.allow_evidence_truncation:
+            raise ValueError(
+                f"Full evidence exceeds --max-input-len for {sample.sample_id}, step {position}. "
+                "Increase the limit or explicitly allow evidence truncation."
+            )
+        return parts
 
     def _run_batch(self, samples: List[Any]) -> List[Dict[str, Any]]:
-        """Finish every hop for one sample batch before returning it."""
         states = []
         for sample in samples:
             if not sample.hops:
-                raise ValueError(f"Sample {sample.sample_id} has no gold supporting hops")
+                raise ValueError(f"Sample {sample.sample_id} has no supporting paragraphs")
             states.append({"sample": sample, "previous": [], "records": []})
-
-        max_hops = max(len(state["sample"].hops) for state in states)
-        for position in range(1, max_hops + 1):
-            active = [state for state in states if position <= len(state["sample"].hops)]
-            prompts, parts_list = [], []
-            for state in active:
-                sample = state["sample"]
-                hop = sample.hops[position - 1]
-                evidence = _evidence_text(hop.get("documents", []), position)
-                previous = "\n".join(
-                    f"Intermediate result {i}: {result}"
-                    for i, result in enumerate(state["previous"], start=1)
-                ) or "(none; this is the first hop)"
-                is_final = position == len(sample.hops)
-                sub_question = str(hop.get("sub_question", "")).strip()
-                if is_final:
-                    instruction = "Answer the original question. Return only the shortest answer span, with no explanation."
-                elif sub_question:
-                    instruction = "Answer the current sub-question. Return only the concise intermediate answer needed by the next hop."
-                else:
-                    instruction = "Produce the concise intermediate fact needed by the next hop. Do not answer the original question yet."
-                sub_question_line = f"Current sub-question: {sub_question}\n" if sub_question else ""
-                parts = self._parts(
-                    "Solve the multi-hop question one hop at a time. Use only the supplied gold evidence.\n"
-                    f"Original question: {sample.question}\nPrevious intermediate results:\n{previous}\n"
-                    f"Current hop: {position}/{len(sample.hops)}\n{sub_question_line}",
-                    evidence,
-                    f"\n{instruction}\nResponse:",
-                )
-                prompts.append(parts["prompt"])
-                parts_list.append((state, hop, parts, is_final))
-
+        if not states:
+            return []
+        for position in range(1, max(len(s["sample"].hops) for s in states) + 1):
+            active = [s for s in states if position <= len(s["sample"].hops)]
+            parts_list = [self._parts(s["sample"], position, s["previous"]) for s in active]
+            prompts = [parts["prompt"] for parts in parts_list]
             if hasattr(self.generator, "generate_with_token_ids_batch"):
                 generated = self.generator.generate_with_token_ids_batch(prompts)
+            elif hasattr(self.generator, "generate_with_token_ids"):
+                generated = [self.generator.generate_with_token_ids(prompt) for prompt in prompts]
             else:
-                generated = [self._generate(prompt) for prompt in prompts]
-            for (state, hop, parts, is_final), (response, token_ids) in zip(parts_list, generated):
+                generated = [(self.generator.generate(prompt), []) for prompt in prompts]
+            if len(generated) != len(active):
+                raise RuntimeError("Generator returned an incorrect number of batch responses")
+            for state, parts, (response, token_ids) in zip(active, parts_list, generated):
+                sample = state["sample"]
                 response = str(response).strip()
+                visible = sample.hops[:position]
+                complete = not parts.get("context_truncated", False)
                 state["records"].append({
-                    "hop": position,
-                    "is_final": is_final,
-                    "prompt": parts["prompt"],
-                    "prompt_parts": parts,
-                    "evidence": hop,
-                    "response": response,
+                    "hop": position, "step": position, "is_final": position == len(sample.hops),
+                    "prompt": parts["prompt"], "prompt_parts": parts,
+                    "new_document": sample.hops[position - 1]["documents"][0],
+                    "evidence": {"hop": position, "documents": [d for h in visible for d in h["documents"]]},
+                    "visible_doc_ids": [d["doc_id"] for h in visible for d in h["documents"]],
+                    "evidence_complete": complete, "response": response,
                     "response_token_ids": token_ids,
-                    "gold_intermediate_answer": hop.get("gold_intermediate_answer", ""),
                 })
                 state["previous"].append(response)
-
-        batch_results = []
+        results = []
         for state in states:
             sample, records = state["sample"], state["records"]
             final = records[-1]
-            labels = answer_label_fields(final["response"], sample.gold_answers, self.f1_threshold)
-            batch_results.append({
-                "id": sample.sample_id,
-                "dataset": sample.raw.get("dataset", "") if isinstance(sample.raw, dict) else "",
-                "question": sample.question,
-                "gold_answer": sample.answer,
-                "gold_answers": sample.gold_answers,
-                "hop_num": len(sample.hops),
-                "prediction": final["response"],
-                "response_token_ids": final["response_token_ids"],
-                "answer_prompt": final["prompt"],
-                "prompt_parts": final["prompt_parts"],
-                "trace": {
-                    "hop_num": len(sample.hops),
-                    "mode": "oracle_iterative",
-                    "retriever": None,
-                    "hops": [
-                        {"hop": item.get("hop"), "documents": item.get("documents", [])}
-                        for item in sample.hops
-                    ],
-                },
-                "hop_records": records,
-                "evidence_mode": "oracle_gold",
-                "hop_mode": "iterative",
-                "retrieval_sufficient": True,
-                **labels,
+            complete = all(record["evidence_complete"] for record in records)
+            results.append({
+                "id": sample.sample_id, "dataset": sample.raw.get("dataset", ""),
+                "split": sample.raw.get("split", ""), "question": sample.question,
+                "gold_answer": sample.answer, "gold_answers": sample.gold_answers,
+                # Retained for the existing ReDeEP API; this alias means execution steps.
+                "hop_num": len(sample.hops), "num_steps": len(sample.hops),
+                "hop_num_definition": "execution_steps",
+                "dataset_hop_count": sample.raw.get("dataset_hop_count"),
+                "order_source": sample.raw.get("order_source"),
+                "prediction": final["response"], "response_token_ids": final["response_token_ids"],
+                "answer_prompt": final["prompt"], "prompt_parts": final["prompt_parts"],
+                "trace": {"hop_num": len(sample.hops), "mode": "oracle_cumulative",
+                          "retriever": None, "hops": sample.hops},
+                "hop_records": records, "evidence_mode": "oracle_gold",
+                "hop_mode": "iterative", "history_mode": "cumulative_evidence_and_responses",
+                "evidence_complete": complete, "retrieval_sufficient": complete,
+                "metadata": sample.raw.get("metadata", {}),
+                **answer_label_fields(final["response"], sample.gold_answers, self.f1_threshold),
             })
-        return batch_results
+        return results
 
-    def run_samples(
-        self,
-        samples: List[Any],
-        batch_size: int = 1,
-        progress_every: int = 10,
-        batch_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Complete and optionally persist one full multi-hop batch at a time."""
-        samples = list(samples)
-        total = len(samples)
-        batch_size = max(1, int(batch_size))
-        progress_every = max(1, int(progress_every))
-        results: List[Dict[str, Any]] = []
-        completed = 0
+    def run_sample(self, sample) -> Dict[str, Any]:
+        return self._run_batch([sample])[0]
+
+    def run_samples(self, samples: List[Any], batch_size: int = 1, progress_every: int = 10,
+                    batch_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None):
+        if batch_size < 1 or progress_every < 1:
+            raise ValueError("batch_size and progress_every must be positive")
+        results = []
         last_report = 0
-
-        for start in range(0, total, batch_size):
-            batch_results = self._run_batch(samples[start : start + batch_size])
+        for start in range(0, len(samples), batch_size):
+            batch = self._run_batch(samples[start:start + batch_size])
             if batch_callback is None:
-                results.extend(batch_results)
+                results.extend(batch)
             else:
-                batch_callback(batch_results)
-            completed += len(batch_results)
-            if completed == total or completed - last_report >= progress_every:
-                print(
-                    f"[oracle] completed {completed}/{total} samples "
-                    f"({100.0 * completed / max(1, total):.1f}%)",
-                    flush=True,
-                )
+                batch_callback(batch)
+            completed = start + len(batch)
+            if completed == len(samples) or completed - last_report >= progress_every:
+                print(f"[oracle] completed {completed}/{len(samples)} samples "
+                      f"({100 * completed / len(samples):.1f}%)", flush=True)
                 last_report = completed
         return results
 
 
-def run_oracle_dataset(
-    input_path: str,
-    dataset_name: str,
-    model_path: str,
-    max_records: Optional[int] = None,
-    f1_threshold: float = DEFAULT_F1_THRESHOLD,
-    max_input_len: int = 3840,
-    max_new_tokens: int = 128,
-    allow_context_fallback: bool = False,
-    sampling_strategy: str = "prefix",
-    seed: int = 42,
-    batch_size: int = 1,
-    progress_every: int = 10,
-    batch_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
-) -> List[Dict[str, Any]]:
-    samples = load_dataset(
-        input_path,
-        dataset_name,
-        allow_context_fallback=allow_context_fallback,
-        max_records=max_records,
-        sampling_strategy=sampling_strategy,
-        seed=seed,
-    )
+def run_oracle_dataset(input_path: str, dataset_name: str, model_path: str,
+                       max_records: Optional[int] = None, f1_threshold: float = DEFAULT_F1_THRESHOLD,
+                       max_input_len: int = 3840, max_new_tokens: int = 128,
+                       sampling_strategy: str = "prefix", seed: int = 42, batch_size: int = 1,
+                       progress_every: int = 10, allow_evidence_truncation: bool = False,
+                       batch_callback=None):
+    samples = load_dataset(input_path, dataset_name, max_records=max_records,
+                           sampling_strategy=sampling_strategy, seed=seed)
+    if any(sample.raw.get("schema_version") != 1 for sample in samples):
+        raise ValueError("The cumulative-evidence entry point requires data/processed schema_version=1 input")
     generator = Generator(model_path, max_new_tokens=max_new_tokens, max_input_len=max_input_len)
-    pipeline = OracleIterativePipeline(generator, f1_threshold=f1_threshold, max_input_len=max_input_len)
-    return pipeline.run_samples(
-        samples,
-        batch_size=max(1, int(batch_size)),
-        progress_every=max(1, int(progress_every)),
-        batch_callback=batch_callback,
-    )
+    pipeline = OracleIterativePipeline(generator, f1_threshold, max_input_len, allow_evidence_truncation)
+    return pipeline.run_samples(samples, batch_size, progress_every, batch_callback)

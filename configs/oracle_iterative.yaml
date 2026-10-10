@@ -1,7 +1,7 @@
-# Oracle-evidence iterative multi-hop generation.
-# No Wiki18 corpus, BM25 index, or external retriever is used.
+# Reference settings for src.run_oracle; pass these values via its CLI flags.
 evidence_mode: oracle_gold
 hop_mode: iterative
+history_mode: cumulative_evidence_and_responses
 retriever: none
 generator_model: model/Qwen3-4B-Instruct-2507
 max_input_len: 3840

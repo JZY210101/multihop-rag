@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "processing_policy": "flashrag_compatible_support_order_full_v1",
+  "splits": [
+    {
+      "dataset": "hotpotqa",
+      "split": "train",
+      "source_rows": 90447,
+      "rows": 90447,
+      "excluded_samples": [],
+      "processing_policy": "flashrag_compatible_support_order_full_v1",
+      "sha256": "7a4213a33ecb62596f7622cf5ad9b68da690a098de5ff955c1a0058321142f18",
+      "num_steps_distribution": {
+        "2": 90447
+      },
+      "order_sources": {
+        "flashrag_supporting_facts_order": 90447
+      },
+      "needs_order_review": 0,
+      "status": "all_records_match_source"
+    },
+    {
+      "dataset": "hotpotqa",
+      "split": "dev",
+      "source_rows": 7405,
+      "rows": 7405,
+      "excluded_samples": [],
+      "processing_policy": "flashrag_compatible_support_order_full_v1",
+      "sha256": "761560a8a43d5ffc1b4a9e135989dd123185199e45a0047c8c70a32dd39f4669",
+      "num_steps_distribution": {
+        "2": 7405
+      },
+      "order_sources": {
+        "flashrag_supporting_facts_order": 7405
+      },
+      "needs_order_review": 0,
+      "status": "all_records_match_source"
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "split": "train",
+      "source_rows": 167454,
+      "rows": 167454,
+      "excluded_samples": [],
+      "processing_policy": "flashrag_compatible_support_order_full_v1",
+      "sha256": "4864db904fd7d58389e4ac9b07af16028dc47ff1b90afc8637f8115d3cb02413",
+      "num_steps_distribution": {
+        "2": 132823,
+        "4": 34631
+      },
+      "order_sources": {
+        "flashrag_supporting_facts_order": 167454
+      },
+      "needs_order_review": 0,
+      "status": "all_records_match_source"
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "split": "dev",
+      "source_rows": 12576,
+      "rows": 12576,
+      "excluded_samples": [],
+      "processing_policy": "flashrag_compatible_support_order_full_v1",
+      "sha256": "7e514a04abd5ee3d647782114afade177d1f7fae2ac7393c8a71dd737a5d1932",
+      "num_steps_distribution": {
+        "2": 9825,
+        "4": 2751
+      },
+      "order_sources": {
+        "flashrag_supporting_facts_order": 12576
+      },
+      "needs_order_review": 0,
+      "status": "all_records_match_source"
+    },
+    {
+      "dataset": "musique",
+      "split": "train",
+      "source_rows": 19938,
+      "rows": 19938,
+      "excluded_samples": [],
+      "processing_policy": "flashrag_compatible_support_order_full_v1",
+      "sha256": "ac2c24491483194a178a77cda913bfac00b401143a17c9a325737a96f5fa0579",
+      "num_steps_distribution": {
+        "2": 14376,
+        "3": 4387,
+        "4": 1175
+      },
+      "order_sources": {
+        "official_decomposition": 19938
+      },
+      "needs_order_review": 0,
+      "status": "all_records_match_source"
+    },
+    {
+      "dataset": "musique",
+      "split": "dev",
+      "source_rows": 2417,
+      "rows": 2417,
+      "excluded_samples": [],
+      "processing_policy": "flashrag_compatible_support_order_full_v1",
+      "sha256": "2617b6bcca59cb820f90d1d91ab3f694cdf261efc168f01a6c91376f8a3f9b42",
+      "num_steps_distribution": {
+        "2": 1252,
+        "3": 760,
+        "4": 405
+      },
+      "order_sources": {
+        "official_decomposition": 2417
+      },
+      "needs_order_review": 0,
+      "status": "all_records_match_source"
+    }
+  ]
+}

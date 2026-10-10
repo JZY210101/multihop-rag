@@ -1,0 +1,90 @@
+{
+  "processing_policy": "flashrag_compatible_support_order_full_v1",
+  "splits": [
+    {
+      "dataset": "hotpotqa",
+      "split": "train",
+      "raw_rows": 90447,
+      "compared_rows": 90447,
+      "rows_without_flashrag_reference": 0,
+      "status": "all_overlapping_orders_match_flashrag",
+      "raw_file": "data/raw/hotpotqa/raw/hotpot_train_v1.1.json",
+      "raw_sha256": "26650cf50234ef5fb2e664ed70bbecdfd87815e6bffc257e068efea5cf7cd316",
+      "reference_file": "data/FlashRAG_Data/hotpotqa/train.jsonl",
+      "reference_sha256": "a81274abafa899ec0ee073102edbe6bb694a8a1174201b4e43e2bc6c98964d1a",
+      "processed_file": "data/processed/hotpotqa/train.jsonl",
+      "processed_sha256": "7a4213a33ecb62596f7622cf5ad9b68da690a098de5ff955c1a0058321142f18"
+    },
+    {
+      "dataset": "hotpotqa",
+      "split": "dev",
+      "raw_rows": 7405,
+      "compared_rows": 7405,
+      "rows_without_flashrag_reference": 0,
+      "status": "all_overlapping_orders_match_flashrag",
+      "raw_file": "data/raw/hotpotqa/raw/hotpot_dev_distractor_v1.json",
+      "raw_sha256": "4e9ecb5c8d3b719f624d66b60f8d56bf227f03914f5f0753d6fa1b359d7104ea",
+      "reference_file": "data/FlashRAG_Data/hotpotqa/dev.jsonl",
+      "reference_sha256": "434ec155867019396312f3d466ce3406c71fe8a2917f49f63bb646ec5ad2ff52",
+      "processed_file": "data/processed/hotpotqa/dev.jsonl",
+      "processed_sha256": "761560a8a43d5ffc1b4a9e135989dd123185199e45a0047c8c70a32dd39f4669"
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "split": "train",
+      "raw_rows": 167454,
+      "compared_rows": 15000,
+      "rows_without_flashrag_reference": 152454,
+      "status": "all_overlapping_orders_match_flashrag",
+      "raw_file": "data/raw/2wikimultihopqa/train.json",
+      "raw_sha256": "b3fddb4d5bb42cd797919cad67616545be51b24740e0a7dabdae7bf76b8f7bfa",
+      "reference_file": "data/FlashRAG_Data/2wikimultihopqa/train.jsonl",
+      "reference_sha256": "978d313681dbf7163232909cccc260660825d02f1e8769a093d763f1eef85ac3",
+      "processed_file": "data/processed/2wikimultihopqa/train.jsonl",
+      "processed_sha256": "4864db904fd7d58389e4ac9b07af16028dc47ff1b90afc8637f8115d3cb02413"
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "split": "dev",
+      "raw_rows": 12576,
+      "compared_rows": 12576,
+      "rows_without_flashrag_reference": 0,
+      "status": "all_overlapping_orders_match_flashrag",
+      "raw_file": "data/raw/2wikimultihopqa/dev.json",
+      "raw_sha256": "48b9bdc69654dc580fda5f935a48b88cb89f11887587310af60d406c8d0111a6",
+      "reference_file": "data/FlashRAG_Data/2wikimultihopqa/dev.jsonl",
+      "reference_sha256": "b4d74d73d1cb3c0632c665a85e1e5060e3411968b807721618cfd2464fc905e3",
+      "processed_file": "data/processed/2wikimultihopqa/dev.jsonl",
+      "processed_sha256": "7e514a04abd5ee3d647782114afade177d1f7fae2ac7393c8a71dd737a5d1932"
+    },
+    {
+      "dataset": "musique",
+      "split": "train",
+      "raw_rows": 19938,
+      "compared_rows": 19938,
+      "rows_without_flashrag_reference": 0,
+      "status": "all_overlapping_orders_match_flashrag",
+      "raw_file": "data/raw/musique/musique_ans_v1.0_train.jsonl",
+      "raw_sha256": "83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a",
+      "reference_file": "data/FlashRAG_Data/musique/train.jsonl",
+      "reference_sha256": "f8a2f40e487f3c62460c6a9ddb122a0dfe5bd56dfe2bf5b0c96a51471b433a9d",
+      "processed_file": "data/processed/musique/train.jsonl",
+      "processed_sha256": "ac2c24491483194a178a77cda913bfac00b401143a17c9a325737a96f5fa0579"
+    },
+    {
+      "dataset": "musique",
+      "split": "dev",
+      "raw_rows": 2417,
+      "compared_rows": 2417,
+      "rows_without_flashrag_reference": 0,
+      "status": "all_overlapping_orders_match_flashrag",
+      "raw_file": "data/raw/musique/musique_ans_v1.0_dev.jsonl",
+      "raw_sha256": "15fa63794d18a94ce12411aca6e2327e65b6e83b0b1490efab3f1962e48abf3b",
+      "reference_file": "data/FlashRAG_Data/musique/dev.jsonl",
+      "reference_sha256": "d1cc08bcc91b060ba67c1e12881789e1315fb9f85d46f03a3413dd5e0f2ed02c",
+      "processed_file": "data/processed/musique/dev.jsonl",
+      "processed_sha256": "2617b6bcca59cb820f90d1d91ab3f694cdf261efc168f01a6c91376f8a3f9b42"
+    }
+  ],
+  "note": "2Wiki train has only 15,000 archived FlashRAG rows; remaining raw rows use the same supporting-title order convention. Annotation order is an experiment policy, not certification of a reasoning chain."
+}

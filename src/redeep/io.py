@@ -186,10 +186,20 @@ def build_prompt_parts(question: str, trace: Dict[str, Any], answer_prompt: Opti
 
 
 def gold_answers(record: Dict[str, Any]) -> List[str]:
-    answers = _first(record, ("gold_answers", "golden_answers", "gold_answer", "answer", "target"), [])
-    if not isinstance(answers, list):
-        answers = [answers]
-    return [str(answer) for answer in answers if answer is not None and str(answer).strip()]
+    """Read the first nonempty gold field; empty alias lists may have a primary gold."""
+    sources = [record]
+    for key in ("metadata", "raw"):
+        if isinstance(record.get(key), dict):
+            sources.append(record[key])
+    for source in sources:
+        for key in ("gold_answers", "golden_answers", "gold_answer", "answer", "target"):
+            answers = source.get(key)
+            if not isinstance(answers, list):
+                answers = [answers]
+            valid = [str(answer) for answer in answers if answer is not None and str(answer).strip()]
+            if valid:
+                return valid
+    return []
 
 
 def normalize_label_mode(mode: str) -> str:
@@ -206,7 +216,7 @@ def make_label(
     mode: str = "f1_answer",
     f1_threshold: float = DEFAULT_F1_THRESHOLD,
 ) -> Optional[int]:
-    """Return the shared answer-F1 label, optionally gated by retrieval recall."""
+    """Return the shared EM/F1/boolean label, optionally gated by retrieval recall."""
     normalized_mode = normalize_label_mode(mode)
     prediction = record_fields(record)[2]
     label = answer_label_fields(prediction, gold_answers(record), f1_threshold)["hallucination_label"]
@@ -235,7 +245,8 @@ def enrich_record(
     label_fields = answer_label_fields(prediction, answers, f1_threshold)
     base_label = label_fields["hallucination_label"]
     sufficient = retrieval_sufficient(record, trace)
-    label = make_label(record, trace, label_mode, f1_threshold)
+    normalized_mode = normalize_label_mode(label_mode)
+    label = None if normalized_mode == "f1_retrieval_aware" and not sufficient else base_label
     hop_num = _first(record, ("hop_num", "num_hops", "num_hop"), trace.get("hop_num"))
     if hop_num is None:
         hop_num = len(trace_hops(trace)) or None
@@ -250,6 +261,14 @@ def enrich_record(
         response_token_ids = []
     return {
         "id": sample_id,
+        "dataset": record.get("dataset", ""),
+        "split": record.get("split", ""),
+        "num_steps": record.get("num_steps", hop_num),
+        "dataset_hop_count": record.get("dataset_hop_count"),
+        "hop_num_definition": record.get("hop_num_definition"),
+        "order_source": record.get("order_source"),
+        "history_mode": record.get("history_mode"),
+        "evidence_complete": record.get("evidence_complete"),
         "question": question,
         "prediction": prediction,
         "response_token_ids": response_token_ids,
@@ -257,11 +276,9 @@ def enrich_record(
         "trace": trace,
         "hop_num": hop_num,
         "prompt_parts": parts,
-        "answer_f1": label_fields["answer_f1"],
+        **label_fields,
         "hallucination_label": label,
         "base_hallucination_label": base_label,
-        "hallucination_label_method": label_fields["hallucination_label_method"],
-        "hallucination_f1_threshold": label_fields["hallucination_f1_threshold"],
         "retrieval_sufficient": sufficient,
         "raw": record,
     }

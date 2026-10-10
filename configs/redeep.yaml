@@ -3,8 +3,8 @@ model_name: "model/Qwen3-4B-Instruct-2507"
 device: ~
 device_map: "auto"
 torch_dtype: "auto"
-label_mode: "f1_answer"
-f1_threshold: 0.30
+label_mode: "f1_answer"  # Legacy flag name; shared EM/F1 plus whole-word yes/no rules.
+f1_threshold: 0.30  # Non-boolean answers pass on EM=1 or F1>=0.30.
 top_heads: 32
 top_layers: 32
 top_fraction: 0.10

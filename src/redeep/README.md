@@ -1,78 +1,216 @@
-# Qwen ReDeeP 多跳适配
+# Qwen ReDeEP 多跳适配
 
-当前正式实验只研究 gold evidence 已正确提供时的生成幻觉。不运行 Wiki18、BM25 或外部检索器。模型使用 ModelScope 下载的 `Qwen/Qwen3-4B-Instruct-2507`，不使用原始 LLaMA2-7B，也不实现 AARF。
+2026-10-09 数据与生成更新：正式输入使用 `data/processed/` 中的原始完整支持段落；B 方式保留已出现段落与模型中间响应，ReDeEP 使用当步全部可见段落作为证据范围。新流程与命令见 [原始数据运行指南](原始数据运行指南.md)；下面的旧证据示例按此更新理解。
 
-## 逐跳流程
+## 1. 目标与范围
+
+原始 ReDeEP 面向单跳 RAG，输入可概括为：
 
 ```text
-Hop 1 gold evidence -> 中间结果 1
-Hop 2 gold evidence + 中间结果 1 -> 中间结果 2
-...
-最后一跳 -> final answer
-每一跳保存 prompt、evidence、response、token ids
+question -> retrieved context -> response
 ```
 
-Qwen 使用模型自带的 chat template，保存的 prompt 与实际生成 prompt 完全一致。MuSiQue 还会输入数据集提供的当前子问题，但不会向模型泄露 gold intermediate answer。
+当前正式版本适配 oracle evidence 的逐 hop 多跳 RAG：
 
-`src/oracle_hop_pipeline.py` 完成逐跳生成，`src/run_oracle.py` 是生成入口；`src/redeep/` 内部模块负责 Qwen attention、FFN residual、token-level ECS、PKS、校准和联合 ReDeeP 分数。正式实验不实现或运行 chunk 模式。
+```text
+question
+  -> hop 1 gold evidence -> intermediate result 1
+  -> hop 2 gold evidence + result 1 -> intermediate result 2
+  -> ...
+  -> final response
+  -> ECS + PKS 联合 ReDeEP 分数
+```
 
-## 运行
+支持 HotpotQA、2WikiMultiHopQA 和 MuSiQue。使用
+本地 `model/Qwen3-4B-Instruct-2507` 提取内部状态。模型通过 ModelScope 下载，不使用
+LLaMA，不包含 AARF，也不输出
+ECS-only、PKS-only 等对照结果。
+
+不使用 Wiki18、BM25 或外部 retriever；三个数据集的支持文档直接作为 gold evidence 输入。
+`src/run_oracle.py` 是正式生成入口，`src/run.py` 仅保留旧检索式兼容流程。
+
+## 2. 多跳修改
+
+- `OracleIterativePipeline` 按数据集提供的支持证据逐 hop 生成，不查询语料库。
+- 每一跳保存 gold evidence、前序中间结果、prompt、response 和生成 token ids。
+- 检测时使用 pipeline 保存的 `prompt_parts` 和实际生成的 `response_token_ids`，避免重建
+  prompt 或重新分词回答造成 token 偏移；旧输出没有 token IDs 时才退回文本分词。
+- ECS 只在多跳检索证据区域内寻找高注意力 token/chunk，不把问题模板当作证据。
+- PKS 对最终回答的生成位置计算各 FFN 层前后词表分布的差异。
+- 在 train 输出上选择 attention heads 和 FFN layers、拟合联合分数，再固定参数评估 dev。
+
+示例：问题需要先找到人物，再查人物出生地。第 1 跳生成人物，第 2 跳使用人物和第 2 跳
+证据生成最终答案；ReDeEP 可对每一跳保存诊断分数，正式标签依据最终答案的共享 EM/F1/yes-no 规则。
+
+## 3. 实现目录
+
+```text
+src/redeep/
+├── io.py               # 读取 trace、构造多跳 prompt、接入共享弱标签
+├── qwen_extractor.py   # Qwen attention、hidden state 和 FFN residual
+├── scores.py           # token-level ECS 与 PKS
+├── chunk_scores.py     # chunk-level ECS 与 PKS
+├── calibration.py      # 特征选择、归一化和联合校准
+└── detector.py         # 端到端检测及 JSONL 输出
+
+src/run_redeep.py       # fit/evaluate 命令行入口
+src/hallucination_labels.py # 全框架共享的答案标签与检索充分性规则
+configs/redeep.yaml     # 默认检测配置
+```
+
+## 4. Qwen 内部状态与分数
+
+模型以 `attn_implementation="eager"` 加载，因为 ECS 必须取得真实 attention 矩阵。
+前向只调用 Qwen backbone，不计算完整 CausalLM logits，从而减少显存峰值。
+
+Qwen3 decoder 是 pre-norm 结构：
+
+- 在 `post_attention_layernorm` 输入处记录 FFN 前 residual；
+- 在 decoder layer 输出处记录 FFN 后 hidden state；
+- 使用最终 RMSNorm 和 `lm_head` 做 Logit Lens 投影；
+- 最终层 hidden state 用于 ECS 余弦相似度。
+
+因果模型位置 `p` 用来预测 token `p+1`。因此回答 token 的 ECS/PKS 使用其前一位置的
+attention 和 hidden state，避免把待检测 token 本身泄漏给检测特征。
+
+token-level 计算：
+
+- ECS：每个候选 head 对证据区域取 attention 最高的 10% token，将其 hidden state
+  平均后与当前生成状态计算余弦相似度；ECS 越低，幻觉风险通常越高。
+- PKS：对 FFN 前后状态分别进行 RMSNorm 和 `lm_head` 投影，计算两个词表分布的 JSD；
+  PKS 越高，幻觉风险通常越高。
+
+chunk-level 先用 attention 选择最相关的证据 chunk，再比较该证据 chunk 与回答 chunk。
+建议配置 `BAAI/bge-base-en-v1.5`，与论文的句段语义比较更一致；不配置 embedding 模型时，
+代码会回退到 Qwen hidden-state cosine，输出中的 `embedding_backend` 会标明实际后端。
+
+## 5. 标签与校准
+
+`fit` 必须使用已经完成多跳检索和答案生成的 train 输出，不能直接输入下载后的原始
+`train.jsonl`。校准数据必须同时包含标签 0 和 1。
+
+ReDeEP 与其他幻觉检测方法共用 `src/hallucination_labels.py`。预测与全部 gold answer 使用
+相同基础规范化，保留冠词和有效标点；多个原始别名分别取最大 EM 和 token-F1：
+
+```text
+answer_em = 1 或 answer_f1 >= 0.30 -> hallucination_label = 0
+否则                              -> hallucination_label = 1
+```
+
+- `f1_answer`：兼容旧参数名，实际使用本节完整答案标签规则。
+- `f1_retrieval_aware`：支持文档未检索到时最终标签为 `null`，不参与校准和指标；否则
+  使用同一答案标签。证据充分性按 supporting title/doc id 匹配，不是 supporting
+  sentence 级判断。
+
+标准答案为 yes/no 时，忽略大小写匹配原始回答中的完整词；只出现一种就提取并精确比较，
+两种都出现或两种都没有则标为幻觉。`yesterday`、`nobody` 不匹配；
+`Yes, there is no difference.` 按约定判为冲突。普通实体答案不启用此规则。
+
+原始 `prediction` 和 token IDs 保留供 ReDeEP 提取内部状态，标签用答案另存
+`answer_for_label`。完整规范化、示例和字段见 [共享标签规则](../../data/ANSWER_LABELS.md)。
+旧名称 `weak_answer`、`retrieval_aware` 保留为兼容别名。标签反映最终答案正确性，不等同于
+人工标注的回答 span 级幻觉。
+
+校准流程为：按训练集 AUC 选择 top heads/layers，对 ECS 和 PKS 做 min-max 归一化，
+再在 train 上选择联合权重 `alpha`，最终分数保持原始 ReDeEP 的组合形式：
+
+```text
+ReDeEP = normalized_PKS - alpha * normalized_ECS
+```
+
+dev 只加载 train 保存的 heads、layers、归一化范围、`alpha` 和分类阈值，不重新选择参数。
+校准文件保存模型、token 粒度和标签规则版本；evaluate 配置不一致时在加载 Qwen 前停止。
+标签规则更新后需要重新 fit，再 evaluate；已保存的原始生成 trace 可用于重新计算标签。
+
+## 6. 配置
+
+默认配置位于 `configs/redeep.yaml`，命令行参数优先于 YAML。
+
+| 配置 | 默认值 | 含义 |
+| --- | --- | --- |
+| `model_name` | `model/Qwen3-4B-Instruct-2507` | ModelScope 下载后的本地模型目录 |
+| `device_map` | `auto` | Accelerate 模型放置；单卡可设 `none` 并指定 `device` |
+| `torch_dtype` | `auto` | 可设 `float16`、`bfloat16` 或 `float32` |
+| `granularity` | `token` | `token` 或 `chunk` |
+| `label_mode` | `f1_answer` | `f1_answer` 或 `f1_retrieval_aware` |
+| `f1_threshold` | `0.30` | 普通答案 EM 命中或 F1 大于等于该值时通过；yes/no 单独精确判定 |
+| `top_heads` | `8` | train 上保留的 ECS heads 数量 |
+| `top_layers` | `8` | train 上保留的 PKS layers 数量 |
+| `top_fraction` | `0.10` | token ECS 选取的高注意力证据比例 |
+| `pks_batch_size` | `8` | Logit Lens 投影批大小 |
+| `chunk_size` | `400` | chunk 字符数上限 |
+| `embedding_model` | `null` | chunk ECS 的 BGE 模型；空值时使用 Qwen hidden state |
+| `max_input_tokens` | `4096` | question + evidence + response 的 token 上限 |
+| `max_records` | `null` | 可选的样本前缀限制 |
+
+eager attention 的显存开销随序列长度近似二次增长。超长 evidence 应由生成 pipeline 在
+生成前同时保留首尾并截断；ReDeEP 不会修改已用于生成的 prompt。保存的 prompt + response
+超过 `max_input_tokens` 时，该样本输出 `redeep_score: null` 和明确的 `redeep_error`。显存不足
+时，应同时降低生成配置中的 `generator_max_input_len` 和这里的上限，再重新生成 trace。
+
+## 7. 运行
+
+先安装依赖并准备本地 Qwen3 模型：
+
+```bash
+pip install -r requirements.txt
+```
+
+模型下载必须使用 ModelScope，并且省略 `README.md` 参数才能下载完整模型仓库：
+
+```bash
+mkdir -p model/Qwen3-4B-Instruct-2507
+modelscope download \
+  --model Qwen/Qwen3-4B-Instruct-2507 \
+  --local_dir ./model/Qwen3-4B-Instruct-2507
+```
+
+运行前确认本地模型文件存在：
+
+```bash
+test -f model/Qwen3-4B-Instruct-2507/config.json
+```
+
+使用 oracle 逐 hop 入口生成 train 和 dev trace。下面以 MuSiQue 为例：
 
 ```bash
 PYTHONPATH=. python -m src.run_oracle \
-  --input data/FlashRAG_Data/musique/dev.jsonl \
-  --dataset musique --model model/Qwen3-4B-Instruct-2507 \
-  --max-records 5 --output outputs/musique_dev_oracle.jsonl
+  --input data/processed/musique/train.jsonl --dataset musique \
+  --output outputs/musique_train_oracle.jsonl
+PYTHONPATH=. python -m src.run_oracle \
+  --input data/processed/musique/dev.jsonl --dataset musique \
+  --output outputs/musique_dev_oracle.jsonl
 ```
 
-HotpotQA 使用 `data/FlashRAG_Data/hotpotqa/train_gold.jsonl` 和 `data/FlashRAG_Data/hotpotqa/dev_gold.jsonl`。先用 train 输出执行 `src.run_redeep fit` 校准，再用同一 calibration 对 dev 执行 `evaluate`。三个数据集分别校准。
-
-小规模 train trace 要使用 `--sampling-strategy random --seed 42`，避免数据文件按 hop 排序造成子集只有 2-hop。`src.run_redeep fit` 会再从这些 trace 中按标签分层留出 20% validation；head/layer 数量和联合系数只在 validation 上选择。
-
-## Token ReDeEP 校准
-
-当前仅运行 token-level ReDeEP：
-
-```text
-ECS：每个生成 token 取 evidence context 中 attention 最高的 10% token，计算隐藏状态余弦相似度
-PKS：FFN 前后 residual 经 LayerNorm + lm_head 后，计算标准数学 JSD
-联合分数：normalized PKS - alpha * normalized ECS
-```
-
-候选池包含 Qwen 实际存在的所有 attention heads 和 FFN layers。按照论文协议搜索：
-
-```text
-K_head  = 1 .. min(32, 实际候选 head 数)
-K_layer = 1 .. min(32, 实际 layer 数)
-alpha   = 0.1 .. 1.9，步长 0.1
-```
-
-这里的 32 是“最终选择多少个特征”的搜索上限，不是把 Qwen 限制为前 32 层。标准 JSD 使用 `0.5 * KL(p||m) + 0.5 * KL(q||m)`；不使用原仓库反向 KL 写法和额外 `10e5` 缩放。
-
-## 标签
-
-最终答案使用共享 token-F1 弱标签：
-
-```text
-answer_f1 <= 0.30  -> hallucination_label = 1
-answer_f1 >  0.30  -> hallucination_label = 0
-```
-
-数据集没有统一的中间 hop gold answer，因此 hop-level ReDeeP 结果只保存为诊断信息；正式检测指标以最终答案标签为准。
-
-## 重要文件
-
-```text
-src/redeep/qwen_extractor.py  Qwen attention/hidden state/FFN 提取
-src/redeep/scores.py          token ECS 与 PKS
-src/redeep/calibration.py     train 校准
-src/redeep/detector.py        ReDeeP 检测
-src/run_redeep.py             fit/evaluate
-```
-
-运行检查：
+然后独立完成 train 校准和 dev 评估：
 
 ```bash
-PYTHONPATH=. python -m compileall -q src scripts
-PYTHONPATH=. pytest -q
+PYTHONPATH=. python -m src.run_redeep fit \
+  --config configs/redeep.yaml \
+  --input outputs/hotpotqa_train_fixed_hop.json \
+  --output outputs/redeep_hotpotqa_train.jsonl \
+  --calibration outputs/redeep_hotpotqa.calibration.json
+
+PYTHONPATH=. python -m src.run_redeep evaluate \
+  --config configs/redeep.yaml \
+  --input outputs/hotpotqa_dev_fixed_hop.json \
+  --output outputs/redeep_hotpotqa_dev.jsonl \
+  --calibration outputs/redeep_hotpotqa.calibration.json
 ```
+
+chunk-level 推荐增加：
+
+```bash
+--granularity chunk --embedding-model model/bge-base-en-v1.5
+```
+
+第一次运行可增加 `--max-records 500` 建立校准子集；若其中只有一种标签，需要扩大样本数。
+正式 dev 评估应移除 `--max-records`。三个数据集建议分别使用各自 train calibration，不能
+用 dev 重新选择 heads/layers。完整数据集建议增加 `--no-token-scores`：`ecs`、`pks` 的
+head/layer 聚合特征和最终分数仍会保留，只省略体积很大的逐 token 数组。
+
+每条输出主要包含 `redeep_score`、`redeep_prediction`、`ecs`、`pks`、`answer_em`、`answer_f1`、
+`hallucination_label`、`base_hallucination_label`、`hallucination_label_method`、
+`hallucination_label_reason`、`hallucination_label_version`、`answer_for_label`、
+`hallucination_f1_threshold`、`retrieval_sufficient`、`response_token_ids`、token span 和多跳 trace。终端汇总
+输出 ROC-AUC、F1、precision、recall、PCC 及可计算时的按 hop AUC。

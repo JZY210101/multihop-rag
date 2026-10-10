@@ -4,7 +4,14 @@ __pycache__/
 
 # Runtime outputs and caches
 outputs/
+logs/
 .cache/
+data/backups/
+# ModelScope download bookkeeping; source manifests and data remain visible.
+data/raw/**/.msc
+data/raw/**/.mdl
+data/raw/**/.mv
+data/raw/**/._____temp/
 data/original_hotpotqa/*.json
 data/original_hotpotqa/*.jsonl
 

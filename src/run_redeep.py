@@ -22,7 +22,7 @@ from typing import Any, Dict, List
 from .redeep.calibration import ReDeEPCalibrator
 from .redeep.detector import ReDeEPDetector, write_jsonl
 from .redeep.io import enrich_record, normalize_label_mode, read_records
-from .hallucination_labels import DEFAULT_F1_THRESHOLD
+from .hallucination_labels import DEFAULT_F1_THRESHOLD, LABEL_RULE_VERSION
 
 
 LABEL_MODES = ("f1_answer", "f1_retrieval_aware", "weak_answer", "retrieval_aware")
@@ -42,7 +42,7 @@ def _parser() -> argparse.ArgumentParser:
             "--f1-threshold",
             type=float,
             default=DEFAULT_F1_THRESHOLD,
-            help="F1 <= threshold is labeled hallucination (default: 0.30)",
+            help="Non-boolean answers pass if EM matches or token F1 >= threshold (default: 0.30)",
         )
         sub.add_argument("--device", default=None)
         sub.add_argument("--device-map", default="auto")
@@ -204,6 +204,7 @@ def _runtime_settings(args: argparse.Namespace) -> Dict[str, Any]:
         "top_fraction": float(args.top_fraction),
         "label_mode": normalize_label_mode(str(args.label_mode)),
         "f1_threshold": float(args.f1_threshold),
+        "label_rule_version": LABEL_RULE_VERSION,
     }
 
 
@@ -303,7 +304,7 @@ def main() -> None:
         labels = {record["hallucination_label"] for record in enriched if record.get("hallucination_label") is not None}
         if labels != {0, 1}:
             raise SystemExit(
-                "fit requires both label classes after F1/retrieval filtering; "
+                "fit requires both label classes after shared answer labeling/retrieval filtering; "
                 "increase the calibration sample or check generated answers"
             )
     else:

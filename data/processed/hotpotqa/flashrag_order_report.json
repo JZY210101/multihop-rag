@@ -1,0 +1,28 @@
+{
+  "processing_policy": "flashrag_compatible_support_order_full_v1",
+  "splits": [
+    {
+      "split": "train",
+      "rows": 90447,
+      "status": "all_orders_match_flashrag_supporting_titles",
+      "raw_file": "data/raw/hotpotqa/raw/hotpot_train_v1.1.json",
+      "raw_sha256": "26650cf50234ef5fb2e664ed70bbecdfd87815e6bffc257e068efea5cf7cd316",
+      "reference_file": "data/FlashRAG_Data/hotpotqa/train.jsonl",
+      "reference_sha256": "a81274abafa899ec0ee073102edbe6bb694a8a1174201b4e43e2bc6c98964d1a",
+      "processed_file": "data/processed/hotpotqa/train.jsonl",
+      "processed_sha256": "7a4213a33ecb62596f7622cf5ad9b68da690a098de5ff955c1a0058321142f18"
+    },
+    {
+      "split": "dev",
+      "rows": 7405,
+      "status": "all_orders_match_flashrag_supporting_titles",
+      "raw_file": "data/raw/hotpotqa/raw/hotpot_dev_distractor_v1.json",
+      "raw_sha256": "4e9ecb5c8d3b719f624d66b60f8d56bf227f03914f5f0753d6fa1b359d7104ea",
+      "reference_file": "data/FlashRAG_Data/hotpotqa/dev.jsonl",
+      "reference_sha256": "434ec155867019396312f3d466ce3406c71fe8a2917f49f63bb646ec5ad2ff52",
+      "processed_file": "data/processed/hotpotqa/dev.jsonl",
+      "processed_sha256": "761560a8a43d5ffc1b4a9e135989dd123185199e45a0047c8c70a32dd39f4669"
+    }
+  ],
+  "note": "Matches annotation title order, not a certified reasoning chain; paragraph contents are validated against raw data separately."
+}

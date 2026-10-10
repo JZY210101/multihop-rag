@@ -90,6 +90,28 @@ def _oracle_hops(record: Dict[str, Any], allow_context_fallback: bool = False) -
     MuSiQue provides an ordered question decomposition with support paragraphs.
     """
     metadata = _metadata(record)
+    if "support_documents" in record:
+        documents = record["support_documents"]
+        if record.get("schema_version") != 1 or not isinstance(documents, list) or not documents:
+            raise ValueError("Expected a nonempty schema_version=1 processed sample")
+        if record.get("num_steps") != len(documents):
+            raise ValueError("num_steps disagrees with support_documents")
+        doc_ids = []
+        hops = []
+        for position, document in enumerate(documents, start=1):
+            if not isinstance(document, dict) or any(
+                not isinstance(document.get(key), str) or not document[key].strip()
+                for key in ("doc_id", "title", "text")
+            ):
+                raise ValueError("Processed support paragraphs require doc_id, title and full text")
+            doc_ids.append(document["doc_id"])
+            hops.append({
+                "hop": position, "documents": [{**document, "score": None}],
+                "evidence_source": "original_full_support_paragraph",
+            })
+        if len(set(doc_ids)) != len(doc_ids):
+            raise ValueError("Processed support paragraph IDs must be unique within each sample")
+        return hops
     decomposition = metadata.get("question_decomposition", record.get("question_decomposition", []))
     if isinstance(decomposition, list) and decomposition:
         hops = []
@@ -189,17 +211,16 @@ def _oracle_hops(record: Dict[str, Any], allow_context_fallback: bool = False) -
 def normalize_record(
     record: Dict[str, Any], index: int, default_hop: int, allow_context_fallback: bool = False
 ) -> Sample:
-    answers = _first(
-        record,
-        ["gold_answers", "golden_answers", "answer", "gold_answer", "target", "output"],
-        [],
-    )
-    if isinstance(answers, list):
-        answers = [str(answer) for answer in answers if answer is not None and str(answer).strip()]
-    elif answers in (None, ""):
-        answers = []
-    else:
-        answers = [str(answers)]
+    answers = []
+    for source in (record, _metadata(record)):
+        for key in ("gold_answers", "golden_answers", "answer", "gold_answer", "target", "output"):
+            value = source.get(key)
+            candidates = value if isinstance(value, list) else [value]
+            answers = [str(answer) for answer in candidates if answer is not None and str(answer).strip()]
+            if answers:
+                break
+        if answers:
+            break
     hops = _oracle_hops(record, allow_context_fallback=allow_context_fallback)
     return Sample(
         sample_id=str(_first(record, ["id", "_id", "uid"], index)),
@@ -246,7 +267,12 @@ def load_dataset(
                 if replacement < limit:
                     reservoir[replacement] = item
             indexed_records = sorted(reservoir, key=lambda item: item[0])
-    return [
-        normalize_record(record, index, default_hop, allow_context_fallback=allow_context_fallback)
-        for index, record in indexed_records
-    ]
+    samples = []
+    canonical_name = "2wikimultihopqa" if name == "2wiki" else name
+    for index, record in indexed_records:
+        if "support_documents" in record and record.get("dataset") != canonical_name:
+            raise ValueError(f"Processed record dataset does not match --dataset {dataset}")
+        samples.append(normalize_record(
+            record, index, default_hop, allow_context_fallback=allow_context_fallback
+        ))
+    return samples
