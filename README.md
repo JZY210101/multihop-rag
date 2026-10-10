@@ -6,6 +6,14 @@
 
 新流程说明见 [数据格式](data/FORMAT.md) 和 [原始数据运行指南](src/redeep/原始数据运行指南.md)。后文含旧版 FlashRAG/检索流程的历史说明；当前实验按新指南执行。
 
+三个数据集的真实 Qwen 小规模检查可直接运行下列命令：自动生成 train/dev、重新 fit、evaluate，
+检查共享标签、完整证据、ReDeEP 分数和 token IDs，并在输出目录保存 `smoke_report.json`。
+
+```bash
+python -m scripts.smoke_test_redeep --train-records 64 --dev-records 16 \
+  --generation-batch-size 4 --score-batch-size 2
+```
+
 当前数据运行只需要 `data/raw/` 和 `data/processed/`。旧 `data/FlashRAG_Data/` 已移除，后文引用该路径的历史命令不适用于当前目录；历史备份保存在 `data/backups/`。
 
 ```bash
@@ -31,7 +39,7 @@ pip install -r requirements.txt
 ```
 
 注意：这里使用 GitHub 官方 FlashRAG 仓库，不使用 PyPI 上同名的非官方/不完整包。
-六个问答数据文件使用 Git LFS；clone 本仓库前需安装 Git LFS，clone 后可执行
+raw/processed 数据文件使用 Git LFS；clone 本仓库前需安装 Git LFS，clone 后可执行
 `git lfs pull` 确认数据已完整下载。
 
 ## 运行：正式 oracle 逐跳流程
